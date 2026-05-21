@@ -69,7 +69,7 @@ const derniereSauvegarde = ref(null)
 // --- CHARGEMENT AUTOMATIQUE INITIAL ---
 onMounted(async () => {
   try {
-    const contenu = await readTextFile('colayco_data.json', { baseDir: BaseDirectory.Document })
+    const contenu = await readTextFile('colayco_data.json', { baseDir: BaseDirectory.AppLocalData })
     const data = JSON.parse(contenu)
     if (data.boutique) boutique.value = data.boutique
     if (data.config) {
@@ -125,7 +125,7 @@ watch([boutique, config, clients, devisListe, prochainNumeroDevis], async () => 
       prochainNumeroDevis: prochainNumeroDevis.value
     }
     await writeTextFile('colayco_data.json', JSON.stringify(dataAEnregistrer, null, 2), {
-      baseDir: BaseDirectory.Document
+      baseDir: BaseDirectory.AppLocalData
     })
     derniereSauvegarde.value = new Date().toLocaleTimeString('fr-CH')
   } catch (err) {
@@ -143,6 +143,21 @@ const gererMiseAJourLogo = (logoBase64) => {
 }
 
 const incrementerNumeroDevis = () => { prochainNumeroDevis.value++ }
+
+const sauvegarderManuellement = async () => {
+  try {
+    await writeTextFile('colayco_data.json', JSON.stringify({
+      boutique: boutique.value,
+      config: config.value,
+      clients: clients.value,
+      devisListe: devisListe.value,
+      prochainNumeroDevis: prochainNumeroDevis.value
+    }, null, 2), { baseDir: BaseDirectory.AppLocalData })
+    derniereSauvegarde.value = new Date().toISOString()  // valeur unique à chaque appel
+  } catch (err) {
+    console.error('Erreur sauvegarde manuelle :', err)
+  }
+}
 
 const selectionnerDossierPDF = async () => {
   const dossier = await open({ directory: true, title: 'Choisir le dossier d\'enregistrement des PDF' })
@@ -238,8 +253,8 @@ const chargerDevisDansEditeur = (devisCopie) => {
       <DevisView ref="devisViewRef" v-if="ongletActif === 'devis'" :config="config" :clients="clients" :boutique="boutique" :devisListe="devisListe" :prochainNumero="prochainNumeroDevis" @numero-utilise="incrementerNumeroDevis" />
       <DevisListeView v-if="ongletActif === 'liste-devis'" :devisListe="devisListe" :boutique="boutique" :config="config" @charger-devis="chargerDevisDansEditeur" />
       <ClientsView v-if="ongletActif === 'clients'" :clients="clients" @add-client="gererAjoutClient" />
-      <ConfigView v-if="ongletActif === 'config'" :config="config" :derniereSauvegarde="derniereSauvegarde" @backup-data="exporterBackup" />
-      <BoutiqueView v-if="ongletActif === 'boutique'" :boutique="boutique" :config="config" :derniereSauvegarde="derniereSauvegarde" @update-logo="gererMiseAJourLogo" @select-pdf-folder="selectionnerDossierPDF" />
+      <ConfigView v-if="ongletActif === 'config'" :config="config" :derniereSauvegarde="derniereSauvegarde" @backup-data="exporterBackup" @sauvegarder="sauvegarderManuellement" />
+      <BoutiqueView v-if="ongletActif === 'boutique'" :boutique="boutique" :config="config" :derniereSauvegarde="derniereSauvegarde" @update-logo="gererMiseAJourLogo" @select-pdf-folder="selectionnerDossierPDF" @sauvegarder="sauvegarderManuellement" />
     </main>
   </div>
 </template>

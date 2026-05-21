@@ -7,10 +7,40 @@
     "core:default",
     "opener:default",
     "fs:default",
-    "fs:allow-mkdir",
-    "fs:allow-read-text-file",
-    "fs:allow-write-text-file",
-    "fs:allow-write-file",
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$APPLOCAL/**" },
+        { "path": "$APPLOCALDATA/**" },
+        { "path": "$APPDATA/**" },
+        { "path": "$HOME/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$APPLOCAL/**" },
+        { "path": "$APPLOCALDATA/**" },
+        { "path": "$APPDATA/**" },
+        { "path": "$HOME/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$APPLOCAL/**" },
+        { "path": "$APPLOCALDATA/**" },
+        { "path": "$HOME/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$APPLOCAL/**" },
+        { "path": "$APPLOCALDATA/**" },
+        { "path": "$HOME/**" }
+      ]
+    },
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save"

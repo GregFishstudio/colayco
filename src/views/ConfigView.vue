@@ -1,8 +1,15 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 
 const props = defineProps({ config: Object, derniereSauvegarde: String })
-const emit = defineEmits(['backup-data'])
+const emit = defineEmits(['backup-data', 'sauvegarder'])
+
+const toastVisible = ref(false)
+watch(() => props.derniereSauvegarde, (val) => {
+  if (!val) return
+  toastVisible.value = true
+  setTimeout(() => { toastVisible.value = false }, 1500)
+})
 
 // Icônes par symbole API
 const iconeParAPI = { gold: '🥇', silver: '🪙', platinum: '💎', palladium: '⚙️' }
@@ -82,17 +89,20 @@ const symboles = [
 
 <template>
   <div>
+    <!-- Toast sauvegarde -->
+    <Transition name="toast">
+      <div v-if="toastVisible" class="toast-saved">✓ Sauvegardé !</div>
+    </Transition>
+
     <div class="header">
       <div>
         <h2>Matériaux & Tarifs</h2>
-        <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.2rem;">
-          <p class="subtitle" style="margin:0;">Gérez vos matières premières et mettez à jour les cours en temps réel.</p>
-          <span v-if="derniereSauvegarde" class="save-chip">✓ Sauvegardé à {{ derniereSauvegarde }}</span>
-        </div>
+        <p class="subtitle" style="margin-bottom:0;">Gérez vos matières premières et mettez à jour les cours en temps réel.</p>
       </div>
-      <button class="btn-success" @click="fetchTousLesPrix">
-        🌐 Actualiser tous les cours
-      </button>
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <button class="btn-save" @click="emit('sauvegarder')">💾 Sauvegarder</button>
+        <button class="btn-success" @click="fetchTousLesPrix">🌐 Actualiser tous les cours</button>
+      </div>
     </div>
 
     <!-- ── Métaux précieux ─────────────────────────── -->
@@ -294,12 +304,24 @@ const symboles = [
 </template>
 
 <style scoped>
-/* ── Save chip ──────────────────────── */
-.save-chip {
-  font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.65rem;
-  border-radius: 20px; white-space: nowrap;
-  background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0;
+/* ── Save button + toast ────────────── */
+.btn-save {
+  background: #fff; border: 1px solid #bbf7d0; color: #166534;
+  padding: 0.5rem 1rem; border-radius: 8px; font-weight: 600;
+  font-size: 0.85rem; cursor: pointer; transition: all 0.15s;
 }
+.btn-save:hover { background: #f0fdf4; border-color: #4ade80; }
+
+.toast-saved {
+  position: fixed; top: 1.2rem; left: 50%; transform: translateX(-50%);
+  z-index: 9999; background: #166534; color: #fff;
+  padding: 0.75rem 2rem; border-radius: 12px;
+  font-weight: 700; font-size: 0.95rem;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+  pointer-events: none;
+}
+.toast-enter-active, .toast-leave-active { transition: all 0.25s ease; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(-10px); }
 
 /* ── Metal list ─────────────────────── */
 .metal-list { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1.25rem; }

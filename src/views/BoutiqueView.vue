@@ -1,13 +1,20 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 
-defineProps({
+const props = defineProps({
   boutique: Object,
   config: Object,
   derniereSauvegarde: String
 })
 
-const emit = defineEmits(['update-logo', 'select-pdf-folder'])
+const emit = defineEmits(['update-logo', 'select-pdf-folder', 'sauvegarder'])
+
+const toastVisible = ref(false)
+watch(() => props.derniereSauvegarde, (val) => {
+  if (!val) return
+  toastVisible.value = true
+  setTimeout(() => { toastVisible.value = false }, 1500)
+})
 
 const declencherInputFichier = () => {
   document.getElementById('logo-file-input').click()
@@ -27,14 +34,17 @@ const gererChangementLogo = (event) => {
 
 <template>
   <div>
+    <!-- Toast sauvegarde -->
+    <Transition name="toast">
+      <div v-if="toastVisible" class="toast-saved">✓ Sauvegardé !</div>
+    </Transition>
+
     <div class="header">
       <div>
         <h2>Configuration PDF</h2>
-        <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.2rem;">
-          <p class="subtitle" style="margin:0;">En-tête, logo et mentions légales qui apparaissent sur vos devis.</p>
-          <span v-if="derniereSauvegarde" class="save-chip">✓ Sauvegardé à {{ derniereSauvegarde }}</span>
-        </div>
+        <p class="subtitle" style="margin-bottom:0;">En-tête, logo et mentions légales qui apparaissent sur vos devis.</p>
       </div>
+      <button class="btn-save" @click="emit('sauvegarder')">💾 Sauvegarder</button>
     </div>
 
     <div class="config-grid">
@@ -176,11 +186,23 @@ const gererChangementLogo = (event) => {
 .footer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.875rem; }
 .footer-grid .full-width { grid-column: span 2; }
 
-.save-chip {
-  font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.65rem;
-  border-radius: 20px; white-space: nowrap;
-  background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0;
+.btn-save {
+  background: #fff; border: 1px solid #bbf7d0; color: #166534;
+  padding: 0.5rem 1rem; border-radius: 8px; font-weight: 600;
+  font-size: 0.85rem; cursor: pointer; transition: all 0.15s; align-self: flex-start;
 }
+.btn-save:hover { background: #f0fdf4; border-color: #4ade80; }
+
+.toast-saved {
+  position: fixed; top: 1.2rem; left: 50%; transform: translateX(-50%);
+  z-index: 9999; background: #166534; color: #fff;
+  padding: 0.75rem 2rem; border-radius: 12px;
+  font-weight: 700; font-size: 0.95rem;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+  pointer-events: none;
+}
+.toast-enter-active, .toast-leave-active { transition: all 0.25s ease; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(-10px); }
 
 .pdf-folder-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; }
 .pdf-folder-info { flex: 1; }
