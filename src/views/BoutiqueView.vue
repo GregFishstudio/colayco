@@ -2,8 +2,12 @@
 import { ref } from 'vue'
 
 defineProps({
-  boutique: Object
+  boutique: Object,
+  config: Object,
+  derniereSauvegarde: String
 })
+
+const emit = defineEmits(['update-logo', 'select-pdf-folder'])
 
 const declencherInputFichier = () => {
   document.getElementById('logo-file-input').click()
@@ -14,85 +18,107 @@ const gererChangementLogo = (event) => {
   if (file) {
     const reader = new FileReader()
     reader.onload = (e) => {
-      // On stocke l'image en Base64 dans l'état réactif
       emit('update-logo', e.target.result)
     }
     reader.readAsDataURL(file)
   }
 }
-
-const emit = defineEmits(['update-logo'])
 </script>
 
 <template>
   <div>
-    <h2>Configuration de la Boutique & du PDF</h2>
-    <p class="subtitle">Paramètre l'en-tête, le logo et les pieds de page légaux pour les devis Colayco.</p>
+    <div class="header">
+      <div>
+        <h2>Configuration PDF</h2>
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.2rem;">
+          <p class="subtitle" style="margin:0;">En-tête, logo et mentions légales qui apparaissent sur vos devis.</p>
+          <span v-if="derniereSauvegarde" class="save-chip">✓ Sauvegardé à {{ derniereSauvegarde }}</span>
+        </div>
+      </div>
+    </div>
 
     <div class="config-grid">
-      <!-- Infos Légales de la SARL -->
       <section class="card">
         <h3>Informations de l'Entreprise</h3>
-        <div class="form-group">
-          <label>Nom de la Société :</label>
-          <input v-model="boutique.nom" type="text" />
+        <div class="field">
+          <label>Nom de la Société</label>
+          <input v-model="boutique.nom" type="text" placeholder="Colayco Sarl" />
         </div>
-        <div class="form-group">
-          <label>Téléphone :</label>
-          <input v-model="boutique.telephone" type="text" />
+        <div class="field">
+          <label>Téléphone</label>
+          <input v-model="boutique.telephone" type="text" placeholder="+41 (0)32 000 00 00" />
         </div>
-        <div class="form-group">
-          <label>Email Contact :</label>
-          <input v-model="boutique.email" type="email" />
+        <div class="field">
+          <label>Email</label>
+          <input v-model="boutique.email" type="email" placeholder="contact@colayco.ch" />
         </div>
-        <div class="form-group">
-          <label>Adresse :</label>
-          <input v-model="boutique.adresse" type="text" />
+        <div class="field">
+          <label>Rue & Numéro</label>
+          <input v-model="boutique.adresse" type="text" placeholder="Rue du Seyon 4" />
         </div>
-        <div class="form-group">
-          <label>Code Postal & Ville :</label>
+        <div class="field">
+          <label>NPA & Ville</label>
           <input v-model="boutique.localite" type="text" placeholder="2000 Neuchâtel" />
         </div>
       </section>
 
-      <!-- Identité Visuelle (Logo & Style) -->
       <section class="card">
-        <h3>Design du PDF (Logo & Options)</h3>
-        <div class="logo-uploader">
-          <label>Logo de l'entreprise :</label>
-          <div class="logo-preview-box" @click="declencherInputFichier">
-            <img v-if="boutique.logo" :src="boutique.logo" alt="Logo Colayco" class="logo-img-preview" />
-            <div v-else class="upload-placeholder">
-              <span>📷 Cliquez pour charger un logo (PNG/JPG)</span>
-            </div>
+        <h3>Logo & Mise en Page</h3>
+        <label class="field-label">Logo de l'entreprise</label>
+        <div class="logo-preview-box" @click="declencherInputFichier">
+          <img v-if="boutique.logo" :src="boutique.logo" alt="Logo" class="logo-img-preview" />
+          <div v-else class="upload-placeholder">
+            <div class="upload-icon">📷</div>
+            <span>Cliquer pour charger un logo</span>
+            <small>PNG · JPG · SVG</small>
           </div>
-          <input id="logo-file-input" type="file" accept="image/*" @change="gererChangementLogo" style="display: none;" />
         </div>
+        <input id="logo-file-input" type="file" accept="image/*" @change="gererChangementLogo" style="display: none;" />
 
-        <div class="form-group style-toggle" style="margin-top: 1.5rem;">
-          <label>Taille du Logo sur le PDF :</label>
+        <div class="field" style="margin-top: 1.25rem;">
+          <label>Taille du Logo</label>
           <select v-model="boutique.logoTaille">
-            <option value="60px">Petit</option>
-            <option value="90px">Moyen (Standard)</option>
-            <option value="120px">Grand</option>
+            <option value="60px">Petit (60px)</option>
+            <option value="90px">Moyen — Standard (90px)</option>
+            <option value="120px">Grand (120px)</option>
           </select>
         </div>
       </section>
 
-      <!-- Pied de page et Coordonnées Bancaires -->
+      <section class="card full-width" v-if="config">
+        <h3>Dossier d'enregistrement PDF</h3>
+        <div class="pdf-folder-row">
+          <div class="pdf-folder-info">
+            <div v-if="config.dossierPDF" class="dossier-chemin">
+              <span class="dossier-path">📂 {{ config.dossierPDF }}</span>
+              <button class="btn-clear-path" @click="config.dossierPDF = ''" title="Effacer">✕</button>
+            </div>
+            <p v-else class="dossier-muted">
+              Aucun dossier sélectionné — une boîte de dialogue s'ouvrira à chaque export PDF.
+            </p>
+            <p class="dossier-hint">
+              Si un dossier est défini, les PDF sont enregistrés automatiquement dans <code>Dossier / NomClient / DEV-XXXX.pdf</code>
+            </p>
+          </div>
+          <button class="btn-pick-folder" @click="emit('select-pdf-folder')">📂 Choisir le dossier</button>
+        </div>
+      </section>
+
       <section class="card full-width">
-        <h3>Pied de Page & Mentions Légales (Bas du PDF)</h3>
-        <div class="form-group">
-          <label>Numéro IDE / TVA (Ex: CHE-123.456.789 TVA) :</label>
-          <input v-model="boutique.tvaNumero" type="text" />
-        </div>
-        <div class="form-group">
-          <label>Coordonnées Bancaires (IBAN / Compte pour paiement d'acompte) :</label>
-          <input v-model="boutique.iban" type="text" placeholder="CH76 0000 0000 ..." />
-        </div>
-        <div class="form-group">
-          <label>Conditions de validité du devis (Texte libre) :</label>
-          <textarea v-model="boutique.conditions" rows="3" placeholder="Ex: Devis valable 30 jours. Acompte de 50% à la commande, solde à la livraison."></textarea>
+        <h3>Pied de Page & Mentions Légales</h3>
+        <div class="footer-grid">
+          <div class="field">
+            <label>Numéro IDE / TVA</label>
+            <input v-model="boutique.tvaNumero" type="text" placeholder="CHE-123.456.789 TVA" />
+          </div>
+          <div class="field">
+            <label>IBAN</label>
+            <input v-model="boutique.iban" type="text" placeholder="CH76 0000 0000 0000 0000 0" />
+          </div>
+          <div class="field full-width">
+            <label>Conditions du devis</label>
+            <textarea v-model="boutique.conditions" rows="3" placeholder="Ex: Devis valable 30 jours. Acompte de 50% à la commande, solde à la livraison."></textarea>
+          </div>
         </div>
       </section>
     </div>
@@ -100,12 +126,83 @@ const emit = defineEmits(['update-logo'])
 </template>
 
 <style scoped>
-.form-group { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 1rem; }
-.form-group label { font-weight: 500; color: #475569; font-size: 0.95rem; }
-.form-group input, .form-group select, .form-group textarea { padding: 0.6rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.95rem; font-family: inherit; }
-.logo-uploader { display: flex; flex-direction: column; gap: 0.5rem; }
-.logo-preview-box { border: 2px dashed #cbd5e1; border-radius: 8px; height: 120px; display: flex; align-items: center; justify-content: center; background: #f8fafc; cursor: pointer; overflow: hidden; transition: border-color 0.2s; }
-.logo-preview-box:hover { border-color: #3b82f6; }
-.upload-placeholder { color: #64748b; font-size: 0.85rem; text-align: center; padding: 1rem; }
+.field { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.875rem; }
+.field:last-child { margin-bottom: 0; }
+.field label, .field-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  display: block;
+  margin-bottom: 0.35rem;
+}
+.field input, .field select, .field textarea {
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  color: #0f172a;
+  background: white;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
+}
+.field textarea { resize: vertical; line-height: 1.5; }
+
+.logo-preview-box {
+  border: 2px dashed #e2e8f0;
+  border-radius: 10px;
+  height: 130px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fafafa;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.15s, background 0.15s;
+}
+.logo-preview-box:hover { border-color: #a5b4fc; background: #eef2ff; }
+.upload-placeholder { display: flex; flex-direction: column; align-items: center; gap: 0.3rem; color: #94a3b8; font-size: 0.82rem; }
+.upload-icon { font-size: 1.5rem; }
+.upload-placeholder small { font-size: 0.72rem; color: #cbd5e1; }
 .logo-img-preview { max-height: 100%; max-width: 100%; object-fit: contain; }
+
+.footer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.875rem; }
+.footer-grid .full-width { grid-column: span 2; }
+
+.save-chip {
+  font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.65rem;
+  border-radius: 20px; white-space: nowrap;
+  background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0;
+}
+
+.pdf-folder-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; }
+.pdf-folder-info { flex: 1; }
+.dossier-chemin { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+.dossier-path {
+  font-size: 0.8rem; color: #166534; background: #dcfce7;
+  padding: 0.3rem 0.7rem; border-radius: 6px; font-family: monospace;
+  word-break: break-all;
+}
+.btn-clear-path {
+  background: transparent; border: 1px solid #fca5a5; border-radius: 6px;
+  color: #ef4444; width: 24px; height: 24px; font-size: 0.7rem;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.btn-clear-path:hover { background: #fef2f2; }
+.dossier-muted { margin: 0 0 0.4rem; font-size: 0.85rem; color: #9ca3af; }
+.dossier-hint { margin: 0; font-size: 0.8rem; color: #6b7280; }
+.dossier-hint code { background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.78rem; }
+.btn-pick-folder {
+  background: #166534; color: #fff; border: none; border-radius: 10px;
+  padding: 0.6rem 1.2rem; font-size: 0.88rem; font-weight: 600;
+  cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: background 0.15s;
+}
+.btn-pick-folder:hover { background: #14532d; }
 </style>
