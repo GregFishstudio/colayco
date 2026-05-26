@@ -101,8 +101,12 @@ onMounted(async () => {
     }
     if (data.clients) clients.value = data.clients
     if (data.devisListe) {
-      // Migration : ajouter statut 'Validé' aux anciens devis sans statut
-      devisListe.value = data.devisListe.map(d => ({ ...d, statut: d.statut ?? 'Validé' }))
+      // Migration : ajouter statut et typeDocument aux anciens enregistrements
+      devisListe.value = data.devisListe.map(d => ({
+        ...d,
+        statut: d.statut ?? 'Validé',
+        typeDocument: d.typeDocument ?? (d.numero?.startsWith('FAC-') ? 'facture' : 'devis')
+      }))
     }
     if (data.prochainNumeroDevis) prochainNumeroDevis.value = data.prochainNumeroDevis
     console.log("Données Colayco chargées avec succès.")
@@ -274,7 +278,7 @@ body { margin: 0; }
 /* ── SIDEBAR ─────────────────────────── */
 .sidebar {
   width: 220px; min-width: 220px;
-  background: #052e16;
+  background: #141414;
   padding: 1.5rem 0.75rem;
   display: flex; flex-direction: column;
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
@@ -293,7 +297,7 @@ body { margin: 0; }
 
 nav { display: flex; flex-direction: column; gap: 0.15rem; flex: 1; }
 nav button {
-  background: transparent; border: none; color: #4b6e56;
+  background: transparent; border: none; color: #ffffff;
   padding: 0.6rem 0.875rem; text-align: left; font-size: 0.85rem;
   border-radius: 8px; cursor: pointer; width: 100%; transition: all 0.15s;
   display: flex; align-items: center; gap: 0.65rem; font-weight: 500;

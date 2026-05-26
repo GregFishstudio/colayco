@@ -90,9 +90,10 @@ const exporterPDF = async (devis) => {
   <div>
     <div class="header">
       <div>
-        <h2>Historique des Devis</h2>
+        <h2>Historique des Devis & Factures</h2>
         <p class="subtitle" style="margin-bottom: 0;">
-          {{ devisListe.length }} devis archivé{{ devisListe.length !== 1 ? 's' : '' }}
+          {{ devisListe.length }} document{{ devisListe.length !== 1 ? 's' : '' }} archivé{{ devisListe.length !== 1 ? 's' : '' }}
+          &nbsp;·&nbsp;{{ devisListe.filter(d => d.typeDocument === 'facture').length }} facture{{ devisListe.filter(d => d.typeDocument === 'facture').length !== 1 ? 's' : '' }}
         </p>
       </div>
     </div>
@@ -106,7 +107,7 @@ const exporterPDF = async (devis) => {
       <table v-else class="standard-table">
         <thead>
           <tr>
-            <th>N° Devis</th>
+            <th>N° Document</th>
             <th>Date</th>
             <th>Client</th>
             <th class="text-right">Montant TTC</th>
@@ -116,8 +117,10 @@ const exporterPDF = async (devis) => {
         <tbody>
           <tr v-for="(devis, index) in devisListe" :key="devis.numero">
             <td class="numero-cell">
-              <span class="badge-number">{{ devis.numero }}</span>
-              <span :class="['badge-statut', devis.statut === 'Validé' ? 'badge-valide' : 'badge-brouillon']">
+              <span :class="['badge-number', devis.typeDocument === 'facture' ? 'badge-number-facture' : '']">{{ devis.numero }}</span>
+              <span :class="['badge-statut',
+                devis.statut === 'Facture'  ? 'badge-facture' :
+                devis.statut === 'Validé'   ? 'badge-valide'  : 'badge-brouillon']">
                 {{ devis.statut || 'Brouillon' }}
               </span>
             </td>
@@ -174,7 +177,7 @@ const exporterPDF = async (devis) => {
                 </div>
                 <div style="text-align:right;">
                   <div class="devis-ref-box">
-                    <div class="ref-label">N° Devis</div>
+                    <div class="ref-label">{{ devisApercu.typeDocument === 'facture' ? 'N° Facture' : 'N° Devis' }}</div>
                     <div class="ref-numero">{{ devisApercu.numero }}</div>
                     <div class="ref-date">{{ devisApercu.date }}</div>
                   </div>
@@ -282,6 +285,9 @@ const exporterPDF = async (devis) => {
 }
 .badge-brouillon { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
 .badge-valide    { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.badge-facture   { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+
+.badge-number-facture { background: #fef3c7; border-color: #fde68a; color: #92400e; }
 
 /* --- MODAL --- */
 .modal-overlay {
