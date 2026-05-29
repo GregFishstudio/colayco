@@ -23,6 +23,27 @@ const numeroDevis = ref(genererNumero(props.prochainNumero))
 const dateDevis = ref(new Date().toISOString().split('T')[0])
 
 const clientSelectionne = ref('')
+const titreProjet = ref('')
+const rechercheClient = ref('')
+const showClientDropdown = ref(false)
+
+const clientsFiltres = computed(() => {
+  const q = rechercheClient.value.toLowerCase().trim()
+  if (!q) return props.clients
+  return props.clients.filter(c =>
+    c.nom.toLowerCase().includes(q) ||
+    (c.localite && c.localite.toLowerCase().includes(q))
+  )
+})
+const selectionnerClient = (c) => {
+  clientSelectionne.value = c
+  rechercheClient.value = ''
+  showClientDropdown.value = false
+}
+const effacerClient = () => {
+  clientSelectionne.value = ''
+  rechercheClient.value = ''
+}
 const devisArticles = ref([
   { description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0 }
 ])
@@ -52,6 +73,7 @@ const statutCourant = computed(() =>
 const construireObjetDevis = (statut) => ({
   numero: numeroDevis.value,
   date: dateDevis.value,
+  titreProjet: titreProjet.value,
   client: clientSelectionne.value ? { ...clientSelectionne.value } : null,
   articles: JSON.parse(JSON.stringify(devisArticles.value)),
   remise: JSON.parse(JSON.stringify(remise.value)),
@@ -79,7 +101,7 @@ const sauvegardeAutomatique = () => {
 }
 
 watch(
-  [devisArticles, numeroDevis, dateDevis, clientSelectionne, remise, arrondi, acompte],
+  [devisArticles, numeroDevis, dateDevis, clientSelectionne, titreProjet, remise, arrondi, acompte],
   sauvegardeAutomatique,
   { deep: true }
 )
@@ -203,6 +225,7 @@ const réinitialiserEditeur = () => {
     numeroDevis.value = genererNumero(props.prochainNumero)
     dateDevis.value = new Date().toISOString().split('T')[0]
     clientSelectionne.value = ''
+    titreProjet.value = ''
     devisArticles.value = [{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0 }]
     remise.value = { active: false, mode: 'pourcent', valeur: 0 }
     arrondi.value = false
@@ -220,6 +243,7 @@ const chargerDevisExistant = (devis) => {
   clearTimeout(sauvegardeTimer.value)
   numeroDevis.value = devis.numero
   dateDevis.value = devis.date
+  titreProjet.value = devis.titreProjet || ''
   devisArticles.value = JSON.parse(JSON.stringify(devis.articles))
   remise.value = devis.remise ? JSON.parse(JSON.stringify(devis.remise)) : { active: false, mode: 'pourcent', valeur: 0 }
   arrondi.value = devis.arrondi || false
@@ -480,11 +504,35 @@ const exporterPDF = async () => {
           <input v-model="dateDevis" type="date" />
         </div>
         <div class="field-group">
+          <label class="field-label">Titre du projet</label>
+          <input v-model="titreProjet" type="text" placeholder="ex: Bague solitaire or 18k" />
+        </div>
+        <div class="field-group client-search-group">
           <label class="field-label">Client destinataire</label>
-          <select v-model="clientSelectionne" class="select-client">
-            <option value="">— Sélectionner un client —</option>
-            <option v-for="c in clients" :key="c.id" :value="c">{{ c.nom }}</option>
-          </select>
+          <div v-if="clientSelectionne" class="client-chip">
+            <span>{{ clientSelectionne.nom }}</span>
+            <button @click="effacerClient" class="client-chip-clear" title="Changer de client">✕</button>
+          </div>
+          <template v-else>
+            <input
+              v-model="rechercheClient"
+              type="text"
+              placeholder="Rechercher un client…"
+              @focus="showClientDropdown = true"
+              @blur="setTimeout(() => { showClientDropdown = false }, 150)"
+            />
+            <div v-if="showClientDropdown" class="client-dropdown">
+              <div v-if="clientsFiltres.length === 0" class="client-dropdown-empty">Aucun résultat</div>
+              <div
+                v-for="c in clientsFiltres" :key="c.id"
+                class="client-dropdown-item"
+                @mousedown.prevent="selectionnerClient(c)"
+              >
+                <span class="cdi-nom">{{ c.nom }}</span>
+                <span class="cdi-loc" v-if="c.localite">{{ c.localite }}</span>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </section>
@@ -511,6 +559,7 @@ const exporterPDF = async () => {
         <div class="pdoc-recipient" v-if="clientSelectionne">
           <div class="pdoc-recipient-name">{{ clientSelectionne.nom }}</div>
           <div class="pdoc-recipient-addr" v-if="clientSelectionne.adresse">{{ clientSelectionne.adresse }}</div>
+          <div class="pdoc-recipient-addr" v-if="clientSelectionne.localite">{{ clientSelectionne.localite }}</div>
           <div class="pdoc-recipient-addr" v-if="clientSelectionne.telephone">{{ clientSelectionne.telephone }}</div>
           <div class="pdoc-recipient-addr" v-if="clientSelectionne.email">{{ clientSelectionne.email }}</div>
         </div>
@@ -525,6 +574,10 @@ const exporterPDF = async () => {
       <div class="pdoc-meta-row">
         <span class="pdoc-meta-key">date :</span>
         <span class="pdoc-meta-val">{{ new Date(dateDevis + 'T12:00:00').toLocaleDateString('fr-CH') }}</span>
+      </div>
+      <div class="pdoc-meta-row" v-if="titreProjet">
+        <span class="pdoc-meta-key">projet :</span>
+        <span class="pdoc-meta-val">{{ titreProjet }}</span>
       </div>
       <div class="pdoc-sep pdoc-sep-bold"></div>
 
@@ -666,13 +719,18 @@ const exporterPDF = async () => {
         </template>
       </div>
 
-      <!-- Message et signature -->
-      <div class="pdoc-message" v-if="boutique.conditions">
+      <!-- Message et signature (devis uniquement) -->
+      <div class="pdoc-message" v-if="boutique.conditions && typeDocument !== 'facture'">
         <p>{{ boutique.conditions }}</p>
         <div class="pdoc-sign">
           <p>Cordialement,</p>
           <p class="pdoc-sign-name">{{ boutique.nom }}</p>
         </div>
+      </div>
+
+      <!-- Conditions de paiement (facture uniquement) -->
+      <div class="pdoc-message" v-if="typeDocument === 'facture' && boutique.conditionsPaiement">
+        <p>{{ boutique.conditionsPaiement }}</p>
       </div>
 
       <!-- Barre info bas de page -->
@@ -720,6 +778,7 @@ const exporterPDF = async () => {
             <div class="qr-fl">Payable par</div>
             <div class="qr-fv bold">{{ clientSelectionne.nom }}</div>
             <div class="qr-fv" v-if="clientSelectionne.adresse">{{ clientSelectionne.adresse }}</div>
+            <div class="qr-fv" v-if="clientSelectionne.localite">{{ clientSelectionne.localite }}</div>
           </div>
           <div class="qr-f">
             <div class="qr-fl">Monnaie &nbsp;&nbsp; Montant</div>
@@ -754,6 +813,7 @@ const exporterPDF = async () => {
                 <div class="qr-fl">Payable par</div>
                 <div class="qr-fv bold">{{ clientSelectionne.nom }}</div>
                 <div class="qr-fv" v-if="clientSelectionne.adresse">{{ clientSelectionne.adresse }}</div>
+                <div class="qr-fv" v-if="clientSelectionne.localite">{{ clientSelectionne.localite }}</div>
               </div>
               <div class="qr-f">
                 <div class="qr-fl">Monnaie &nbsp;&nbsp; Montant</div>
@@ -861,6 +921,16 @@ const exporterPDF = async () => {
 .editor-fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
 .field-group { display: flex; flex-direction: column; gap: 0.25rem; }
 .field-label { font-size: 0.8rem; font-weight: 600; color: #475569; }
+.client-search-group { position: relative; }
+.client-chip { display: flex; align-items: center; justify-content: space-between; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 0.48rem 0.75rem; font-size: 0.875rem; font-weight: 600; color: #15803d; }
+.client-chip-clear { background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 1rem; padding: 0; line-height: 1; }
+.client-chip-clear:hover { color: #475569; }
+.client-dropdown { position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 300; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); max-height: 220px; overflow-y: auto; }
+.client-dropdown-item { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0.75rem; cursor: pointer; font-size: 0.875rem; gap: 0.5rem; }
+.client-dropdown-item:hover { background: #f8fafc; }
+.client-dropdown-empty { padding: 0.5rem 0.75rem; font-size: 0.82rem; color: #94a3b8; }
+.cdi-nom { font-weight: 600; color: #111; }
+.cdi-loc { font-size: 0.75rem; color: #94a3b8; white-space: nowrap; }
 
 /* ── Bouton flottant aperçu ─────────────── */
 .btn-floating-quit {
@@ -1106,9 +1176,10 @@ const exporterPDF = async () => {
 .qr-scissors-line { flex: 1; border-top: 1px dashed #bbb; }
 .qr-scissors-icon { flex-shrink: 0; }
 
-/* ── Bulletin QR standard suisse (page 2 PDF) ── */
+/* ── Bulletin QR standard suisse (page 2 PDF) — hauteur totale ≈ 10cm ── */
 .qr-bill {
   display: flex;
+  height: 353px;   /* 10cm - scissors row ≈ 378px total */
   border-top: 1.5px solid #333;
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
   font-size: 0.72rem; background: #fff;
@@ -1117,8 +1188,8 @@ const exporterPDF = async () => {
 /* Récépissé gauche ≈ 62mm → 236px @96dpi */
 .qr-bill-receipt {
   width: 236px; min-width: 236px;
-  padding: 12px 12px 12px 16px;
-  display: flex; flex-direction: column; gap: 10px;
+  padding: 20px 14px 20px 20px;
+  display: flex; flex-direction: column; justify-content: space-between;
   border-right: 1.5px dashed #aaa;
 }
 
@@ -1127,13 +1198,13 @@ const exporterPDF = async () => {
 
 /* Section de paiement droite ≈ 148mm → flex:1 */
 .qr-bill-payment {
-  flex: 1; padding: 12px 16px 12px 12px;
-  display: flex; flex-direction: column; gap: 6px;
+  flex: 1; padding: 20px 20px 20px 16px;
+  display: flex; flex-direction: column; justify-content: space-between;
 }
 .qr-bill-payment-body {
-  display: flex; gap: 16px; align-items: flex-start; flex: 1;
+  display: flex; gap: 20px; align-items: flex-start; flex: 1;
 }
-.qr-bill-payment-details { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.qr-bill-payment-details { flex: 1; display: flex; flex-direction: column; justify-content: space-between; }
 
 /* En-têtes de section */
 .qr-bill-head {
@@ -1142,8 +1213,8 @@ const exporterPDF = async () => {
   border-bottom: 1px solid #ccc; padding-bottom: 3px; margin-bottom: 2px;
 }
 
-/* Image QR ≈ 46×46mm → 175px */
-.qr-bill-qrimg { width: 175px; height: 175px; image-rendering: pixelated; flex-shrink: 0; }
+/* Image QR ≈ 46×46mm → 200px pour hauteur 10cm */
+.qr-bill-qrimg { width: 200px; height: 200px; image-rendering: pixelated; flex-shrink: 0; }
 
 /* Champs du bulletin */
 .qr-f { display: flex; flex-direction: column; gap: 1px; }

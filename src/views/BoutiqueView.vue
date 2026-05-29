@@ -129,6 +129,10 @@ const gererChangementLogo = (event) => {
             <label>Conditions du devis</label>
             <textarea v-model="boutique.conditions" rows="3" placeholder="Ex: Devis valable 30 jours. Acompte de 50% à la commande, solde à la livraison."></textarea>
           </div>
+          <div class="field full-width">
+            <label>Conditions de paiement (facture)</label>
+            <input v-model="boutique.conditionsPaiement" type="text" placeholder="Ex: Paiement à 10 jours." />
+          </div>
         </div>
       </section>
     </div>

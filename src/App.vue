@@ -24,7 +24,8 @@ const boutique = ref({
   logoTaille: '90px',
   tvaNumero: 'CHE-000.000.000 TVA',
   iban: 'CH76 0000 0000 0000 0000 0',
-  conditions: 'Devis valable 30 jours. Les cours des métaux précieux sont sujets à fluctuation. Un acompte de 50% est requis pour lancer la fabrication.'
+  conditions: 'Devis valable 30 jours. Les cours des métaux précieux sont sujets à fluctuation. Un acompte de 50% est requis pour lancer la fabrication.',
+  conditionsPaiement: 'Paiement à 10 jours.'
 })
 
 // --- DONNÉES PAR DÉFAUT DE LA CONFIG ---
@@ -57,8 +58,8 @@ const config = ref({
 
 // --- DONNÉES PAR DÉFAUT DES CLIENTS ---
 const clients = ref([
-  { id: 1, nom: 'Atelier Bijouterie Lausanne', email: 'contact@lausanne-bijoux.ch', telephone: '021 311 00 00', adresse: 'Rue de Bourg 12, 1003 Lausanne' },
-  { id: 2, nom: 'Galerie Neuchâtel', email: 'info@galeriene.ch', telephone: '032 721 00 00', adresse: 'Place Pury 4, 2000 Neuchâtel' }
+  { id: 1, nom: 'Atelier Bijouterie Lausanne', email: 'contact@lausanne-bijoux.ch', telephone: '021 311 00 00', adresse: 'Rue de Bourg 12', localite: '1003 Lausanne' },
+  { id: 2, nom: 'Galerie Neuchâtel', email: 'info@galeriene.ch', telephone: '032 721 00 00', adresse: 'Place Pury 4', localite: '2000 Neuchâtel' }
 ])
 
 // --- LISTE DE STOCKAGE DE L'HISTORIQUE ---
@@ -88,6 +89,7 @@ onMounted(async () => {
       if (data.config.tvaTaux === undefined) data.config.tvaTaux = 8.1
       if (data.config.tvaMode === undefined) data.config.tvaMode = 'incluse'
       if (data.config.dossierPDF === undefined) data.config.dossierPDF = ''
+      if (data.boutique && data.boutique.conditionsPaiement === undefined) data.boutique.conditionsPaiement = 'Paiement à 10 jours.'
       // Migration diamants : ajouter id et nom si manquants
       if (data.config.diamants) {
         data.config.diamants = data.config.diamants.map((d, i) => ({
@@ -140,6 +142,10 @@ watch([boutique, config, clients, devisListe, prochainNumeroDevis], async () => 
 // --- ACTIONS INTERFACES ---
 const gererAjoutClient = (clientData) => {
   clients.value.push({ id: Date.now(), ...clientData })
+}
+
+const gererSuppressionClient = (id) => {
+  clients.value = clients.value.filter(c => c.id !== id)
 }
 
 const gererMiseAJourLogo = (logoBase64) => {
@@ -256,7 +262,7 @@ const chargerDevisDansEditeur = (devisCopie) => {
     <main class="content">
       <DevisView ref="devisViewRef" v-if="ongletActif === 'devis'" :config="config" :clients="clients" :boutique="boutique" :devisListe="devisListe" :prochainNumero="prochainNumeroDevis" @numero-utilise="incrementerNumeroDevis" />
       <DevisListeView v-if="ongletActif === 'liste-devis'" :devisListe="devisListe" :boutique="boutique" :config="config" @charger-devis="chargerDevisDansEditeur" />
-      <ClientsView v-if="ongletActif === 'clients'" :clients="clients" @add-client="gererAjoutClient" />
+      <ClientsView v-if="ongletActif === 'clients'" :clients="clients" @add-client="gererAjoutClient" @delete-client="gererSuppressionClient" />
       <ConfigView v-if="ongletActif === 'config'" :config="config" :derniereSauvegarde="derniereSauvegarde" @backup-data="exporterBackup" @sauvegarder="sauvegarderManuellement" />
       <BoutiqueView v-if="ongletActif === 'boutique'" :boutique="boutique" :config="config" :derniereSauvegarde="derniereSauvegarde" @update-logo="gererMiseAJourLogo" @select-pdf-folder="selectionnerDossierPDF" @sauvegarder="sauvegarderManuellement" />
     </main>
