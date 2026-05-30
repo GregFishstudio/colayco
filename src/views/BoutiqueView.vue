@@ -125,9 +125,13 @@ const gererChangementLogo = (event) => {
             <label>IBAN</label>
             <input v-model="boutique.iban" type="text" placeholder="CH76 0000 0000 0000 0000 0" />
           </div>
+          <div class="field">
+            <label>Nom de la Banque</label>
+            <input v-model="boutique.banque" type="text" placeholder="Ex: UBS, Raiffeisen, PostFinance…" />
+          </div>
           <div class="field full-width">
-            <label>Conditions du devis</label>
-            <textarea v-model="boutique.conditions" rows="3" placeholder="Ex: Devis valable 30 jours. Acompte de 50% à la commande, solde à la livraison."></textarea>
+            <label>Conditions du devis <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#94a3b8;">(affiché sur les devis uniquement)</span></label>
+            <textarea v-model="boutique.conditions" rows="3" placeholder="Ex: Devis valable 30 jours. Les cours des métaux précieux sont sujets à fluctuation. Un acompte de 50% est requis pour lancer la fabrication."></textarea>
           </div>
         </div>
       </section>

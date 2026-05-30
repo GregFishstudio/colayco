@@ -5,61 +5,63 @@ import { writeFile, mkdir } from '@tauri-apps/plugin-fs'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
+import QRCode from 'qrcode'
 
 const props = defineProps({
   config: Object,
   clients: Array,
   boutique: Object,
-  devisListe: Array,
-  prochainNumero: { type: Number, default: 1 }
+  facturesListe: Array,
+  prochainNumeroFacture: { type: Number, default: 1 }
 })
 
-const emit = defineEmits(['numero-utilise', 'convertir-en-facture'])
+const emit = defineEmits(['facture-numero-utilise'])
 
-const genererNumero = (n) => `DEV-${new Date().getFullYear()}-${String(n).padStart(4, '0')}`
-const numeroDevis = ref(genererNumero(props.prochainNumero))
-const dateDevis = ref(new Date().toISOString().split('T')[0])
+const genererNumero = (n) => `FAC-${new Date().getFullYear()}-${String(n).padStart(4, '0')}`
+const numeroFacture = ref(genererNumero(props.prochainNumeroFacture))
+const dateFacture = ref(new Date().toISOString().split('T')[0])
 const clientSelectionne = ref('')
-const devisArticles = ref([{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0 }])
+const factureArticles = ref([{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0 }])
 const titreProjet = ref('')
 const modeApercu = ref(false)
+const delaiPaiement = ref(30)
 const remise = ref({ active: false, mode: 'pourcent', valeur: 0 })
 const arrondi = ref(false)
 const acompte = ref({ montant: 0, date: '' })
-const dvReady = ref(false)
+const ftReady = ref(false)
 const sauvegardeTimer = ref(null)
 const notifValidation = ref(false)
 
 const statutCourant = computed(() =>
-  props.devisListe.find(d => d.numero === numeroDevis.value)?.statut ?? null
+  props.facturesListe.find(f => f.numero === numeroFacture.value)?.statut ?? null
 )
 
-const construireObjetDevis = (statut) => ({
-  numero: numeroDevis.value, date: dateDevis.value, titreProjet: titreProjet.value,
+const construireObjetFacture = (statut) => ({
+  numero: numeroFacture.value, date: dateFacture.value, titreProjet: titreProjet.value,
   client: clientSelectionne.value ? { ...clientSelectionne.value } : null,
-  articles: JSON.parse(JSON.stringify(devisArticles.value)),
+  articles: JSON.parse(JSON.stringify(factureArticles.value)),
   remise: JSON.parse(JSON.stringify(remise.value)),
   arrondi: arrondi.value,
   acompte: JSON.parse(JSON.stringify(acompte.value)),
+  delaiPaiement: delaiPaiement.value,
   totalTTC: totalFinal.value, statut
 })
 
 const sauvegardeAutomatique = () => {
-  if (!dvReady.value) return
+  if (!ftReady.value) return
   clearTimeout(sauvegardeTimer.value)
   sauvegardeTimer.value = setTimeout(() => {
-    const obj = construireObjetDevis('Brouillon')
-    const idx = props.devisListe.findIndex(d => d.numero === numeroDevis.value)
-    if (idx !== -1) { props.devisListe[idx] = obj }
-    else { props.devisListe.push(obj); emit('numero-utilise') }
+    const obj = construireObjetFacture('Brouillon')
+    const idx = props.facturesListe.findIndex(f => f.numero === numeroFacture.value)
+    if (idx !== -1) { props.facturesListe[idx] = obj } else { props.facturesListe.push(obj); emit('facture-numero-utilise') }
   }, 1500)
 }
 
-watch([devisArticles, numeroDevis, dateDevis, clientSelectionne, titreProjet, remise, arrondi, acompte], sauvegardeAutomatique, { deep: true })
+watch([factureArticles, numeroFacture, dateFacture, clientSelectionne, titreProjet, remise, arrondi, acompte, delaiPaiement], sauvegardeAutomatique, { deep: true })
 let _printGuard = false
 let _unlistenClose = null
 onMounted(async () => {
-  setTimeout(() => { dvReady.value = true }, 400)
+  setTimeout(() => { ftReady.value = true }, 400)
   try {
     _unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
       if (_printGuard) event.preventDefault()
@@ -71,12 +73,10 @@ onUnmounted(() => {
   if (_unlistenClose) _unlistenClose()
 })
 
-const totalHT = computed(() => devisArticles.value.reduce((s, a) => s + a.quantite * a.prixUnitaire, 0))
+const totalHT = computed(() => factureArticles.value.reduce((s, a) => s + a.quantite * a.prixUnitaire, 0))
 const tvaTaux = computed(() => props.config.tvaTaux ?? 8.1)
 const tvaIncluse = computed(() => (props.config.tvaMode ?? 'incluse') === 'incluse')
-const tva = computed(() => tvaIncluse.value
-  ? totalHT.value * tvaTaux.value / (100 + tvaTaux.value)
-  : totalHT.value * tvaTaux.value / 100)
+const tva = computed(() => tvaIncluse.value ? totalHT.value * tvaTaux.value / (100 + tvaTaux.value) : totalHT.value * tvaTaux.value / 100)
 const totalTTC = computed(() => tvaIncluse.value ? totalHT.value : totalHT.value + tva.value)
 const montantRemise = computed(() => {
   if (!remise.value.active || !remise.value.valeur) return 0
@@ -88,14 +88,14 @@ const arrondiDiff = computed(() => arrondi.value ? Math.round(totalApresRemise.v
 const totalFinal = computed(() => Math.round((totalApresRemise.value + arrondiDiff.value) * 100) / 100)
 const solde = computed(() => Math.max(0, totalFinal.value - (parseFloat(acompte.value.montant) || 0)))
 
-const ajouterLigneDevis = (desc = '', prix = 0) => devisArticles.value.push({ description: desc, quantite: 1, prixUnitaire: prix })
-const supprimerArticle = (index) => devisArticles.value.splice(index, 1)
+const ajouterLigne = (desc = '', prix = 0) => factureArticles.value.push({ description: desc, quantite: 1, prixUnitaire: prix })
+const supprimerArticle = (index) => factureArticles.value.splice(index, 1)
 
 const injecterConfigAuDevis = (type) => {
-  if (type === 'cire') ajouterLigneDevis('Forfait Fonte Cire Perdue', props.config.cirePerdue)
-  if (type === '3d') ajouterLigneDevis('Impression 3D Altmann (Résine)', props.config.impression3d)
+  if (type === 'cire') ajouterLigne('Forfait Fonte Cire Perdue', props.config.cirePerdue)
+  if (type === '3d') ajouterLigne('Impression 3D Altmann (Résine)', props.config.impression3d)
 }
-const injecterPrestation = (p) => ajouterLigneDevis(p.nom, p.prix)
+const injecterPrestation = (p) => ajouterLigne(p.nom, p.prix)
 
 const injecterMetalAuPoids = (metal) => {
   const perteMetal = props.config.perteMetal ?? 0
@@ -104,10 +104,8 @@ const injecterMetalAuPoids = (metal) => {
   const poids = parseFloat(s.replace(',', '.'))
   if (isNaN(poids) || poids <= 0) { alert('Valeur invalide.'); return }
   const facteur = 1 + perteMetal / 100
-  const desc = perteMetal > 0
-    ? `${metal.nom} (${poids.toFixed(2)} g + ${perteMetal}% perte à ${metal.prixGramme.toFixed(2)} CHF/g)`
-    : `${metal.nom} (${poids.toFixed(2)} g × ${metal.prixGramme.toFixed(2)} CHF/g)`
-  devisArticles.value.push({ description: desc, quantite: 1, prixUnitaire: poids * metal.prixGramme * facteur })
+  const desc = perteMetal > 0 ? `${metal.nom} (${poids.toFixed(2)} g + ${perteMetal}% perte à ${metal.prixGramme.toFixed(2)} CHF/g)` : `${metal.nom} (${poids.toFixed(2)} g × ${metal.prixGramme.toFixed(2)} CHF/g)`
+  factureArticles.value.push({ description: desc, quantite: 1, prixUnitaire: poids * metal.prixGramme * facteur })
 }
 
 const injecterMainOeuvre = () => {
@@ -116,7 +114,7 @@ const injecterMainOeuvre = () => {
   if (s === null) return
   const h = parseFloat(s.replace(',', '.'))
   if (isNaN(h) || h <= 0) { alert('Valeur invalide.'); return }
-  devisArticles.value.push({ description: `Main d'œuvre : ${h.toFixed(2)} h à ${t.toFixed(2)} CHF/h`, quantite: 1, prixUnitaire: h * t })
+  factureArticles.value.push({ description: `Main d'œuvre : ${h.toFixed(2)} h à ${t.toFixed(2)} CHF/h`, quantite: 1, prixUnitaire: h * t })
 }
 
 const injecterDiamantAuDevis = (dia) => {
@@ -124,49 +122,45 @@ const injecterDiamantAuDevis = (dia) => {
   if (s === null) return
   const qte = parseInt(s, 10)
   if (isNaN(qte) || qte <= 0) { alert('Quantité invalide.'); return }
-  devisArticles.value.push({ description: `${dia.nom || 'Diamant'} (${dia.taille})`, quantite: qte, prixUnitaire: dia.prix })
+  factureArticles.value.push({ description: `${dia.nom || 'Diamant'} (${dia.taille})`, quantite: qte, prixUnitaire: dia.prix })
 }
 
-const validerDevis = () => {
-  if (!clientSelectionne.value) { alert("Sélectionnez d'abord un client pour valider ce devis."); return }
+const validerFacture = () => {
+  if (!clientSelectionne.value) { alert("Sélectionnez d'abord un client pour valider cette facture."); return }
   clearTimeout(sauvegardeTimer.value)
-  const obj = construireObjetDevis('Validé')
-  const idx = props.devisListe.findIndex(d => d.numero === numeroDevis.value)
-  if (idx !== -1) { props.devisListe[idx] = obj } else { props.devisListe.push(obj); emit('numero-utilise') }
+  const obj = construireObjetFacture('Validé')
+  const idx = props.facturesListe.findIndex(f => f.numero === numeroFacture.value)
+  if (idx !== -1) { props.facturesListe[idx] = obj } else { props.facturesListe.push(obj); emit('facture-numero-utilise') }
   notifValidation.value = true
   setTimeout(() => { notifValidation.value = false }, 3000)
 }
 
 const réinitialiserEditeur = () => {
   if (!confirm("Voulez-vous effacer la table de travail actuelle ?")) return
-  dvReady.value = false; clearTimeout(sauvegardeTimer.value)
-  numeroDevis.value = genererNumero(props.prochainNumero)
-  dateDevis.value = new Date().toISOString().split('T')[0]
+  ftReady.value = false; clearTimeout(sauvegardeTimer.value)
+  numeroFacture.value = genererNumero(props.prochainNumeroFacture)
+  dateFacture.value = new Date().toISOString().split('T')[0]
   clientSelectionne.value = ''
-  devisArticles.value = [{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0 }]
+  factureArticles.value = [{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0 }]
   titreProjet.value = ''
   remise.value = { active: false, mode: 'pourcent', valeur: 0 }
-  arrondi.value = false; acompte.value = { montant: 0, date: '' }; modeApercu.value = false
-  setTimeout(() => { dvReady.value = true }, 400)
+  arrondi.value = false; acompte.value = { montant: 0, date: '' }; delaiPaiement.value = 30; modeApercu.value = false
+  setTimeout(() => { ftReady.value = true }, 400)
 }
 
-const chargerDevisExistant = (devis) => {
-  dvReady.value = false; clearTimeout(sauvegardeTimer.value)
-  numeroDevis.value = devis.numero; dateDevis.value = devis.date
-  devisArticles.value = JSON.parse(JSON.stringify(devis.articles))
-  remise.value = devis.remise ? JSON.parse(JSON.stringify(devis.remise)) : { active: false, mode: 'pourcent', valeur: 0 }
-  arrondi.value = devis.arrondi || false
-  acompte.value = devis.acompte ? JSON.parse(JSON.stringify(devis.acompte)) : { montant: 0, date: '' }
-  titreProjet.value = devis.titreProjet || ''
-  clientSelectionne.value = props.clients.find(c => c.id === devis.client?.id) || devis.client
-  setTimeout(() => { dvReady.value = true }, 400)
+const chargerFactureExistant = (facture) => {
+  ftReady.value = false; clearTimeout(sauvegardeTimer.value)
+  numeroFacture.value = facture.numero; dateFacture.value = facture.date
+  factureArticles.value = JSON.parse(JSON.stringify(facture.articles))
+  remise.value = facture.remise ? JSON.parse(JSON.stringify(facture.remise)) : { active: false, mode: 'pourcent', valeur: 0 }
+  arrondi.value = facture.arrondi || false
+  acompte.value = facture.acompte ? JSON.parse(JSON.stringify(facture.acompte)) : { montant: 0, date: '' }
+  delaiPaiement.value = facture.delaiPaiement ?? 30
+  titreProjet.value = facture.titreProjet || ''
+  clientSelectionne.value = props.clients.find(c => c.id === facture.client?.id) || facture.client
+  setTimeout(() => { ftReady.value = true }, 400)
 }
-defineExpose({ chargerDevisExistant })
-
-const convertirEnFacture = () => {
-  if (!confirm(`Créer une facture à partir du devis ${numeroDevis.value} ?`)) return
-  emit('convertir-en-facture', construireObjetDevis(statutCourant.value || 'Validé'))
-}
+defineExpose({ chargerFactureExistant })
 
 // ── Imprimer ─────────────────────────────────────────────
 const imprimer = async () => {
@@ -181,7 +175,73 @@ const imprimer = async () => {
   window.print()
 }
 
-// ── Export PDF (devis = 1 page, pas de QR) ───────────────
+// ── QR-bill page (partagée entre imprimer et exporterPDF) ─
+const _ajouterPageQR = async (pdf) => {
+  const b = props.boutique
+  const client = clientSelectionne.value
+  const cleanIBAN = (b.iban || '').replace(/\s/g, '').toUpperCase()
+  const localParts = (b.localite || '').split(' ')
+  const postalCode = localParts[0] || ''
+  const city = localParts.slice(1).join(' ') || ''
+  const cNom = client ? nomCompletClient(client) : ''
+  const cAdL1 = client ? adresseLigne1(client) : ''
+  const cAdL2 = client ? adresseLigne2(client) : ''
+  const qrLines = [
+    'SPC', '0200', '1', cleanIBAN,
+    'K', b.nom || '', b.adresse || '', `${postalCode} ${city}`.trim(), '', '', 'CH',
+    '', '', '', '', '', '',
+    totalFinal.value.toFixed(2), 'CHF',
+    client ? 'K' : '', cNom, cAdL1, cAdL2, '', '', client ? 'CH' : '',
+    'NON', '', `Facture ${numeroFacture.value}`, 'EPD'
+  ]
+  const qrDataUrl = await QRCode.toDataURL(qrLines.join('\n'), { width: 460, margin: 1, color: { dark: '#000000', light: '#ffffff' } })
+  const pageW = 210, pageH = 297
+  pdf.addPage()
+  const slipY = 192
+  pdf.setDrawColor(0, 0, 0)
+  pdf.setLineDashPattern([1, 1], 0)
+  pdf.line(5, slipY, pageW - 5, slipY); pdf.line(62, slipY, 62, pageH - 5)
+  pdf.setLineDashPattern([], 0)
+  pdf.setTextColor(150, 150, 150); pdf.setFontSize(8); pdf.text('✂', 2, slipY - 1)
+  pdf.setTextColor(0, 0, 0)
+  const ibanFmt = (b.iban || '').toUpperCase()
+  const rx = 5, ry = slipY + 5
+  pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.text('Empfangsschein', rx, ry + 4)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Konto / Zahlbar an', rx, ry + 11)
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
+  pdf.text(ibanFmt, rx, ry + 15); pdf.text(b.nom || '', rx, ry + 19)
+  pdf.text(b.adresse || '', rx, ry + 23); pdf.text(b.localite || '', rx, ry + 27)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Zahlbar durch', rx, ry + 36)
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
+  if (client) { pdf.text(cNom, rx, ry + 40); if (cAdL1) pdf.text(cAdL1, rx, ry + 44); if (cAdL2) pdf.text(cAdL2, rx, ry + 48) }
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold')
+  pdf.text('Währung', rx, ry + 62); pdf.text('Betrag', rx + 18, ry + 62)
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
+  pdf.text('CHF', rx, ry + 67); pdf.text(totalFinal.value.toFixed(2), rx + 18, ry + 67)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Annahmestelle', 60, slipY + 100, { align: 'right' })
+  const px = 67, py = slipY + 5
+  pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.text('Zahlteil', px, py + 4)
+  const qrX = px, qrY = py + 8
+  pdf.addImage(qrDataUrl, 'PNG', qrX, qrY, 46, 46)
+  const cx = qrX + 23 - 3.5, cy = qrY + 23 - 3.5
+  pdf.setFillColor(255, 255, 255); pdf.rect(cx, cy, 7, 7, 'F')
+  pdf.setFillColor(0, 0, 0); pdf.rect(cx + 2, cy + 0.5, 3, 6, 'F'); pdf.rect(cx + 0.5, cy + 2, 6, 3, 'F')
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold')
+  pdf.text('Währung', px, qrY + 50); pdf.text('Betrag', px + 25, qrY + 50)
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10)
+  pdf.text('CHF', px, qrY + 56); pdf.text(totalFinal.value.toFixed(2), px + 25, qrY + 56)
+  const dx = px + 50, dy = py + 8
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Konto / Zahlbar an', dx, dy)
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
+  pdf.text(ibanFmt, dx, dy + 4); pdf.text(b.nom || '', dx, dy + 8)
+  pdf.text(b.adresse || '', dx, dy + 12); pdf.text(b.localite || '', dx, dy + 16)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Référence', dx, dy + 24)
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8); pdf.text(numeroFacture.value, dx, dy + 28)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Zahlbar durch', dx, dy + 36)
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
+  if (client) { pdf.text(cNom, dx, dy + 40); if (cAdL1) pdf.text(cAdL1, dx, dy + 44); if (cAdL2) pdf.text(cAdL2, dx, dy + 48) }
+}
+
 const nomCompletClient = (c) => {
   if (!c) return ''
   return [c.civilite, c.prenom, c.nom].filter(Boolean).join(' ') || c.nom || ''
@@ -196,13 +256,14 @@ const adresseLigne2 = (c) => {
   return [c.npa, c.lieu].filter(Boolean).join(' ')
 }
 
+// ── Export PDF (page 1 html2canvas + page 2 QR-bill) ─────
 const sanitiserNom = (nom) => (nom || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim() || 'Client'
 
 const exporterPDF = async () => {
   try {
     const dossierBase = props.config.dossierPDF
     const nomClient = sanitiserNom(nomCompletClient(clientSelectionne.value) || 'Sans_Nom')
-    const nomFichier = `${numeroDevis.value}_${nomClient}.pdf`
+    const nomFichier = `${numeroFacture.value}_${nomClient}.pdf`
 
     let cheminFichier
     if (dossierBase) {
@@ -217,7 +278,7 @@ const exporterPDF = async () => {
     modeApercu.value = true
     await new Promise(r => setTimeout(r, 150))
 
-    const element = document.getElementById('devis-imprimable')
+    const element = document.getElementById('facture-imprimable')
     element.classList.add('pdf-bw')
     await new Promise(r => setTimeout(r, 50))
 
@@ -227,9 +288,13 @@ const exporterPDF = async () => {
     const pdf = new jsPDF('p', 'mm', 'a4')
     const pageW = 210, pageH = 297
     const imgH = (canvas.height * pageW) / canvas.width
-    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pageW, imgH)
+    const imgData = canvas.toDataURL('image/png')
+    pdf.addImage(imgData, 'PNG', 0, 0, pageW, imgH)
     let remaining = imgH - pageH, yOff = -pageH
-    while (remaining > 0) { pdf.addPage(); pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, yOff, pageW, imgH); yOff -= pageH; remaining -= pageH }
+    while (remaining > 0) { pdf.addPage(); pdf.addImage(imgData, 'PNG', 0, yOff, pageW, imgH); yOff -= pageH; remaining -= pageH }
+
+    // ── Page 2 : QR-bill suisse ──────────────────────────
+    await _ajouterPageQR(pdf)
 
     await writeFile(cheminFichier, new Uint8Array(pdf.output('arraybuffer')))
     modeApercu.value = wasApercu
@@ -244,28 +309,24 @@ const exporterPDF = async () => {
 <template>
   <div :class="{ 'apercu-on': modeApercu }">
     <Transition name="toast">
-      <div v-if="notifValidation" class="toast-valide">✓ Devis validé et enregistré !</div>
+      <div v-if="notifValidation" class="toast-valide">✓ Facture validée et enregistrée !</div>
     </Transition>
 
     <!-- Header masqué en aperçu -->
     <header class="header no-print" v-if="!modeApercu">
       <div>
-        <h2>Éditeur de Devis</h2>
+        <h2>Éditeur de Facture</h2>
         <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.2rem;">
-          <p class="subtitle" style="margin:0;">Créez et exportez un devis professionnel.</p>
-          <span v-if="statutCourant === 'Validé'" class="statut-pill statut-valide">✓ Validé</span>
+          <p class="subtitle" style="margin:0;">Créez et exportez une facture professionnelle.</p>
+          <span v-if="statutCourant === 'Validé'" class="statut-pill statut-valide">✓ Validée</span>
           <span v-else-if="statutCourant === 'Brouillon'" class="statut-pill statut-brouillon">● Brouillon</span>
-          <span v-else class="statut-pill statut-nouveau">◎ Nouveau</span>
+          <span v-else class="statut-pill statut-nouveau">◎ Nouvelle</span>
         </div>
       </div>
       <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
         <button @click="réinitialiserEditeur" class="btn-secondary" style="margin-top:0;">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Nouveau
-        </button>
-        <button @click="convertirEnFacture" class="btn-secondary" style="margin-top:0;">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-          → Facture
         </button>
         <button @click="modeApercu = true" class="btn-secondary" style="margin-top:0;">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -275,7 +336,7 @@ const exporterPDF = async () => {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           Imprimer
         </button>
-        <button @click="validerDevis" class="btn-valider">
+        <button @click="validerFacture" class="btn-valider">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
           Valider
         </button>
@@ -291,12 +352,12 @@ const exporterPDF = async () => {
       <h3>Paramètres & Client</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;">
         <div>
-          <label class="field-lbl">N° de Devis</label>
-          <input v-model="numeroDevis" type="text" />
+          <label class="field-lbl">N° de Facture</label>
+          <input v-model="numeroFacture" type="text" />
         </div>
         <div>
           <label class="field-lbl">Date d'Émission</label>
-          <input v-model="dateDevis" type="date" />
+          <input v-model="dateFacture" type="date" />
         </div>
         <div>
           <label class="field-lbl">Client Destinataire</label>
@@ -310,6 +371,13 @@ const exporterPDF = async () => {
         <label class="field-lbl">Titre du Projet / Objet</label>
         <input v-model="titreProjet" type="text" placeholder="Ex: Bague solitaire or 18K — Mme Dupont" />
       </div>
+      <div style="margin-top:0.875rem;display:flex;align-items:center;gap:0.75rem;">
+        <label class="field-lbl" style="white-space:nowrap;margin:0;">Délai de paiement</label>
+        <div class="delai-toggle">
+          <button :class="['delai-btn', delaiPaiement === 10 ? 'active' : '']" @click="delaiPaiement = 10">10 jours</button>
+          <button :class="['delai-btn', delaiPaiement === 30 ? 'active' : '']" @click="delaiPaiement = 30">30 jours</button>
+        </div>
+      </div>
     </section>
 
     <!-- Bouton flottant quitter aperçu -->
@@ -319,7 +387,7 @@ const exporterPDF = async () => {
     </button>
 
     <!-- ═══ DOCUMENT A4 ═══ -->
-    <div id="devis-imprimable" class="a4-page">
+    <div id="facture-imprimable" class="a4-page">
 
       <!-- Raccourcis tarifs (éditeur seulement) -->
       <div class="quick-actions no-print" v-if="!modeApercu">
@@ -360,8 +428,9 @@ const exporterPDF = async () => {
         </div>
         <div class="a4-title-zone">
           <div class="a4-doc-infos">
-            <div><span class="a4-info-lbl">Devis N° :</span> {{ numeroDevis }}</div>
-            <div><span class="a4-info-lbl">Date :</span> {{ dateDevis }}</div>
+            <div><span class="a4-info-lbl">Facture N° :</span> {{ numeroFacture }}</div>
+            <div><span class="a4-info-lbl">Date :</span> {{ dateFacture }}</div>
+            <div><span class="a4-info-lbl">Échéance :</span> à {{ delaiPaiement }} jours</div>
           </div>
         </div>
       </div>
@@ -381,7 +450,7 @@ const exporterPDF = async () => {
           </div>
         </div>
         <div class="a4-party">
-          <div class="a4-section-lbl">Destinataire :</div>
+          <div class="a4-section-lbl">Facturé à :</div>
           <div class="a4-party-info" v-if="clientSelectionne">
             <div class="a4-party-name">{{ nomCompletClient(clientSelectionne) }}</div>
             <div v-if="adresseLigne1(clientSelectionne)">{{ adresseLigne1(clientSelectionne) }}</div>
@@ -395,9 +464,9 @@ const exporterPDF = async () => {
       <!-- Titre du projet -->
       <div v-if="titreProjet" class="a4-project-title">{{ titreProjet }}</div>
 
-      <!-- Raccourcis inline pour ajout ligne (no-print) -->
+      <!-- Bouton ajout ligne (no-print) -->
       <div class="no-print" v-if="!modeApercu" style="margin-bottom:0.5rem;">
-        <button @click="ajouterLigneDevis('', 0)" class="btn-secondary" style="font-size:0.82rem;">＋ Ajouter une ligne</button>
+        <button @click="ajouterLigne('', 0)" class="btn-secondary" style="font-size:0.82rem;">＋ Ajouter une ligne</button>
       </div>
 
       <!-- Tableau articles -->
@@ -412,7 +481,7 @@ const exporterPDF = async () => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(art, index) in devisArticles" :key="index">
+          <tr v-for="(art, index) in factureArticles" :key="index">
             <td>
               <span v-if="modeApercu">{{ art.description }}</span>
               <input v-else v-model="art.description" type="text" class="table-input" />
@@ -480,11 +549,10 @@ const exporterPDF = async () => {
           <span class="a4-total-val">−{{ montantRemise.toFixed(2) }} CHF</span>
         </div>
         <div v-if="arrondi && arrondiDiff !== 0" class="a4-total-row">
-          <span class="a4-total-lbl">Arrondi</span>
-          <span class="a4-total-val">{{ arrondiDiff > 0 ? '+' : '' }}{{ arrondiDiff.toFixed(2) }} CHF</span>
+          <span class="a4-total-lbl">Arrondi</span><span class="a4-total-val">{{ arrondiDiff > 0 ? '+' : '' }}{{ arrondiDiff.toFixed(2) }} CHF</span>
         </div>
         <div class="a4-grand-total-row">
-          <span class="a4-grand-lbl">{{ tvaIncluse ? 'Total TTC' : 'Total TTC' }}</span>
+          <span class="a4-grand-lbl">Total TTC</span>
           <span class="a4-grand-val">{{ totalFinal.toFixed(2) }} CHF</span>
         </div>
         <template v-if="acompte.montant > 0">
@@ -500,10 +568,18 @@ const exporterPDF = async () => {
       </div>
 
       <!-- Footer document -->
-      <div class="a4-footer" style="grid-template-columns:1fr;" v-if="boutique.conditions">
+      <div class="a4-footer">
+        <div class="a4-footer-col" v-if="boutique.iban">
+          <div class="a4-footer-lbl">Règlement :</div>
+          <div class="a4-footer-sub">Par virement bancaire :</div>
+          <div class="a4-footer-info" v-if="boutique.banque">Banque : {{ boutique.banque }}</div>
+          <div class="a4-footer-info">IBAN : {{ boutique.iban }}</div>
+          <div class="a4-footer-info" v-if="boutique.tvaNumero">{{ boutique.tvaNumero }}</div>
+        </div>
         <div class="a4-footer-col">
-          <div class="a4-footer-lbl">Termes &amp; Conditions</div>
-          <div class="a4-footer-info">{{ boutique.conditions }}</div>
+          <div class="a4-footer-lbl">Conditions de paiement</div>
+          <div class="a4-footer-info">Payable à {{ delaiPaiement }} jours dès réception de la présente facture.</div>
+          <div class="a4-footer-info" v-if="boutique.conditions" style="margin-top:0.4rem;">{{ boutique.conditions }}</div>
         </div>
       </div>
 
@@ -514,53 +590,36 @@ const exporterPDF = async () => {
 <style scoped>
 .field-lbl { font-size: 0.82rem; font-weight: 600; color: #7a5c30; display: block; margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.4px; }
 
-/* ── A4 Document ──────────────────────────────── */
-.a4-page {
-  background: #FFFFFF;
-  padding: 3rem 3.5rem;
-  font-size: 13px;
-  color: #0f172a;
-  line-height: 1.5;
-}
-
-.a4-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 2.25rem;
-}
+/* ── A4 Document ─────────────────────────────── */
+.a4-page { background: #FFFFFF; padding: 2.5rem 3rem; font-size: 13px; color: #0f172a; line-height: 1.5; }
+.a4-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; }
 .a4-logo-zone { flex: 0 0 auto; max-width: 45%; }
 .a4-enseigne { font-size: 1.1rem; font-weight: 800; letter-spacing: -0.2px; }
 .a4-title-zone { text-align: right; }
-.a4-doc-infos { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; line-height: 2.2; }
+.a4-doc-type { font-size: 3.8rem; font-weight: 900; letter-spacing: 6px; line-height: 1; margin-bottom: 0.75rem; color: #0f172a; }
+.a4-doc-infos { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; line-height: 2; }
 .a4-info-lbl { color: #64748b; }
-.a4-hr { border: none; border-top: 1.5px solid #0f172a; margin: 0 0 2.25rem; }
-.a4-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; margin-bottom: 2.5rem; }
-.a4-section-lbl { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.6rem; }
-.a4-party-info { font-size: 0.82rem; line-height: 1.85; color: #334155; }
+.a4-hr { border: none; border-top: 1.5px solid #0f172a; margin: 0 0 1.5rem; }
+.a4-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; margin-bottom: 2rem; }
+.a4-section-lbl { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.5rem; }
+.a4-party-info { font-size: 0.82rem; line-height: 1.75; color: #334155; }
 .a4-party-name { font-weight: 700; color: #0f172a; }
-
-/* ── Table ──────────────────────────────────── */
 .a4-table { width: 100%; border-collapse: collapse; margin-bottom: 0.25rem; }
-.a4-table th { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; padding: 0.75rem 0.4rem 0.75rem 0; border-bottom: 1.5px solid #0f172a; text-align: left; }
-.a4-table td { padding: 0.9rem 0.4rem 0.9rem 0; border-bottom: 1px solid #e0d5c5; font-size: 0.86rem; vertical-align: middle; }
+.a4-table th { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; padding: 0.6rem 0.4rem 0.6rem 0; border-bottom: 1.5px solid #0f172a; text-align: left; }
+.a4-table td { padding: 0.7rem 0.4rem 0.7rem 0; border-bottom: 1px solid #e0d5c5; font-size: 0.86rem; vertical-align: middle; }
 .a4-table tbody tr:last-child td { border-bottom: none; }
-
-/* ── Totaux ─────────────────────────────────── */
-.a4-totals { display: flex; flex-direction: column; align-items: flex-end; margin-top: 1.5rem; margin-bottom: 2.5rem; gap: 0.3rem; }
-.a4-total-row { display: flex; width: 290px; justify-content: space-between; font-size: 0.82rem; padding: 0.2rem 0; }
+.a4-totals { display: flex; flex-direction: column; align-items: flex-end; margin-top: 1rem; margin-bottom: 2rem; gap: 0.2rem; }
+.a4-total-row { display: flex; width: 280px; justify-content: space-between; font-size: 0.82rem; padding: 0.15rem 0; }
 .a4-total-lbl { font-weight: 700; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px; color: #475569; }
 .a4-total-val { font-weight: 600; color: #0f172a; }
 .a4-total-discount .a4-total-lbl, .a4-total-discount .a4-total-val { color: #dc2626; }
-.a4-grand-total-row { display: flex; width: 290px; justify-content: space-between; padding: 0.5rem 0 0.2rem; border-top: 1.5px solid #0f172a; margin-top: 0.35rem; }
+.a4-grand-total-row { display: flex; width: 280px; justify-content: space-between; padding: 0.4rem 0 0.15rem; border-top: 1.5px solid #0f172a; margin-top: 0.25rem; }
 .a4-grand-lbl { font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; }
 .a4-grand-val { font-weight: 800; font-size: 0.95rem; }
-
-/* ── Footer ─────────────────────────────────── */
-.a4-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; padding-top: 2rem; border-top: 1.5px solid #0f172a; font-size: 0.8rem; margin-top: auto; }
-.a4-footer-lbl { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.5rem; }
-.a4-footer-sub { font-weight: 600; font-size: 0.78rem; margin-bottom: 0.25rem; }
-.a4-footer-info { color: #475569; line-height: 1.7; }
+.a4-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; padding-top: 1.5rem; border-top: 1.5px solid #0f172a; font-size: 0.8rem; margin-top: auto; }
+.a4-footer-lbl { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.4rem; }
+.a4-footer-sub { font-weight: 600; font-size: 0.78rem; margin-bottom: 0.2rem; }
+.a4-footer-info { color: #475569; line-height: 1.65; }
 
 .a4-project-title {
   font-size: 1rem; font-weight: 700; color: #0f172a;
@@ -570,17 +629,20 @@ const exporterPDF = async () => {
 }
 
 /* ── Buttons ─────────────────────────────────── */
-.btn-valider { background: #16a34a; color: #fff; border: none; padding: 0.62rem 1.35rem; border-radius: 7px; font-weight: 700; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.45rem; }
-.btn-valider:hover { background: #15803d; transform: translateY(-1px); }
+.btn-valider { background: #0284c7; color: #fff; border: none; padding: 0.62rem 1.35rem; border-radius: 7px; font-weight: 700; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.45rem; }
+.btn-valider:hover { background: #0369a1; transform: translateY(-1px); }
 .statut-pill { font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 20px; letter-spacing: 0.4px; white-space: nowrap; }
 .statut-brouillon { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
-.statut-valide    { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.statut-valide    { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
 .statut-nouveau   { background: #faf6ef; color: #9a7a4a; border: 1px solid #e8dcc8; }
 .toast-valide { position: fixed; top: 1.2rem; right: 1.5rem; z-index: 9999; background: #0B3D2E; color: #f5efe3; padding: 0.7rem 1.4rem; border-radius: 10px; font-weight: 600; font-size: 0.9rem; box-shadow: 0 4px 20px rgba(0,0,0,0.18); pointer-events: none; }
 .toast-enter-active, .toast-leave-active { transition: all 0.3s ease; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(-12px); }
 .btn-floating-quit { position: fixed; bottom: 20px; right: 20px; background: #0B3D2E; color: #f5efe3; border: 1px solid rgba(197,160,89,0.2); box-shadow: 0 10px 25px rgba(0,0,0,0.2); padding: 0.75rem 1.25rem; font-weight: 600; z-index: 999; border-radius: 7px; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
 .btn-floating-quit:hover { background: #0a3226; }
+.delai-toggle { display: flex; gap: 0; border: 1.5px solid #d4b896; border-radius: 7px; overflow: hidden; }
+.delai-btn { padding: 0.35rem 0.9rem; font-size: 0.82rem; font-weight: 600; border: none; background: #fff; color: #8a7055; cursor: pointer; transition: all 0.15s; border-radius: 0; }
+.delai-btn.active { background: #C5A059; color: #0B3D2E; }
 .quick-section { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.75rem; }
 .quick-section:last-child { margin-bottom: 0; }
 .quick-label { font-size: 0.68rem; font-weight: 700; color: #b09070; text-transform: uppercase; letter-spacing: 0.6px; }

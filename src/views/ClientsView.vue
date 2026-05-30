@@ -6,13 +6,24 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['add-client'])
-const nouveauClient = ref({ nom: '', email: '', telephone: '', adresse: '' })
 
-// Soumettre un client manuellement
+const clientVide = () => ({ civilite: '', prenom: '', nom: '', rue: '', numero: '', npa: '', lieu: '', email: '', telephone: '' })
+const nouveauClient = ref(clientVide())
+
 const soumettreClient = () => {
   if (!nouveauClient.value.nom) return
   emit('add-client', { ...nouveauClient.value })
-  nouveauClient.value = { nom: '', email: '', telephone: '', adresse: '' }
+  nouveauClient.value = clientVide()
+}
+
+const nomComplet = (c) => [c.civilite, c.prenom, c.nom].filter(Boolean).join(' ') || c.nom || '—'
+const adresseComplet = (c) => {
+  if (c.rue !== undefined) {
+    const l1 = [c.rue, c.numero].filter(Boolean).join(' ')
+    const l2 = [c.npa, c.lieu].filter(Boolean).join(' ')
+    return [l1, l2].filter(Boolean).join(', ') || '—'
+  }
+  return c.adresse || '—'
 }
 
 // --- LOGIQUE D'IMPORTATION CSV ---
@@ -27,41 +38,32 @@ const gererImportCSV = (event) => {
   const reader = new FileReader()
   reader.onload = (e) => {
     const texte = e.target.result
-    // Découpage par ligne
     const lignes = texte.split(/\r?\n/)
-    
     let contactsImportes = 0
 
-    // On boucle sur chaque ligne (on commence à 1 si tu as des en-têtes Nom, Email, etc., ou 0 sinon)
-    // Ici on commence à 0 pour accepter les fichiers bruts, mais on vérifie s'il y a du contenu
-    lignes.forEach((ligne, index) => {
-      // Nettoyage et séparation par virgule ou point-virgule (courant sur Excel en Suisse)
-      const colonnes = ligne.split(/[,;]/)
-      
-      // On s'assure qu'il y a au moins un Nom dans la première colonne
-      const nom = colonnes[0]?.trim()
-      
-      // Ignorer la ligne d'en-tête générique si elle existe
+    lignes.forEach((ligne) => {
+      const col = ligne.split(/[,;]/).map(c => c.trim())
+      const nom = col[2] || col[0]
       if (!nom || nom.toLowerCase() === 'nom' || nom.toLowerCase() === 'name') return
 
-      const email = colonnes[1]?.trim() || ''
-      const telephone = colonnes[2]?.trim() || ''
-      const adresse = colonnes[3]?.trim() || ''
-
-      // Envoi du contact à l'état global de App.vue
       emit('add-client', {
-        nom,
-        email,
-        telephone,
-        adresse
+        civilite: col[0] || '',
+        prenom: col[1] || '',
+        nom: col[2] || col[0] || '',
+        rue: col[3] || '',
+        numero: col[4] || '',
+        npa: col[5] || '',
+        lieu: col[6] || '',
+        email: col[7] || col[1] || '',
+        telephone: col[8] || col[2] || ''
       })
       contactsImportes++
     })
 
-    alert(`Importation réussie : ${contactsImportes} contacts ajoutés à la base Colayco !`)
-    event.target.value = '' // Reset l'input pour pouvoir ré-importer le même fichier
+    alert(`Importation réussie : ${contactsImportes} contacts ajoutés !`)
+    event.target.value = ''
   }
-  
+
   reader.readAsText(fichier, 'UTF-8')
 }
 </script>
@@ -70,23 +72,67 @@ const gererImportCSV = (event) => {
   <div>
     <h2>Base Clients Colayco</h2>
     <p class="subtitle">Gérez vos contacts et importez vos fichiers clients au format CSV.</p>
-    
+
     <section class="card">
       <h3>Ajouter un nouveau client</h3>
-      <div class="client-form-grid" style="margin-bottom: 1.5rem;">
-        <input v-model="nouveauClient.nom" type="text" placeholder="Nom de l'entreprise / Client" />
-        <input v-model="nouveauClient.email" type="email" placeholder="Email" />
-        <input v-model="nouveauClient.telephone" type="text" placeholder="Téléphone" />
-        <input v-model="nouveauClient.adresse" type="text" placeholder="Adresse complète (Rue, NPA, Ville)" />
-        <button @click="soumettreClient" class="btn-blue" style="grid-column: span 2;">Enregistrer le Client</button>
+
+      <div style="display:grid;grid-template-columns:140px 1fr 1fr;gap:0.75rem;margin-bottom:0.75rem;">
+        <div>
+          <label class="field-lbl">Civilité</label>
+          <select v-model="nouveauClient.civilite">
+            <option value="">—</option>
+            <option value="Madame">Madame</option>
+            <option value="Monsieur">Monsieur</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-lbl">Prénom</label>
+          <input v-model="nouveauClient.prenom" type="text" placeholder="Prénom" />
+        </div>
+        <div>
+          <label class="field-lbl">Nom *</label>
+          <input v-model="nouveauClient.nom" type="text" placeholder="Nom (obligatoire)" />
+        </div>
       </div>
 
-      <div class="csv-import-box" style="border-top: 1px dashed #e2e8f0; padding-top: 1.25rem; display: flex; justify-content: space-between; align-items: center;">
+      <div style="display:grid;grid-template-columns:2fr 80px 100px 1fr;gap:0.75rem;margin-bottom:0.75rem;">
+        <div>
+          <label class="field-lbl">Rue</label>
+          <input v-model="nouveauClient.rue" type="text" placeholder="Rue" />
+        </div>
+        <div>
+          <label class="field-lbl">N°</label>
+          <input v-model="nouveauClient.numero" type="text" placeholder="12" />
+        </div>
+        <div>
+          <label class="field-lbl">NPA</label>
+          <input v-model="nouveauClient.npa" type="text" placeholder="2000" />
+        </div>
+        <div>
+          <label class="field-lbl">Localité</label>
+          <input v-model="nouveauClient.lieu" type="text" placeholder="Neuchâtel" />
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1rem;">
+        <div>
+          <label class="field-lbl">Email</label>
+          <input v-model="nouveauClient.email" type="email" placeholder="email@exemple.ch" />
+        </div>
+        <div>
+          <label class="field-lbl">Téléphone</label>
+          <input v-model="nouveauClient.telephone" type="text" placeholder="032 000 00 00" />
+        </div>
+      </div>
+
+      <button @click="soumettreClient" class="btn-blue">Enregistrer le Client</button>
+
+      <div class="csv-import-box" style="border-top: 1px dashed #e2e8f0; padding-top: 1.25rem; margin-top: 1.25rem; display: flex; justify-content: space-between; align-items: center;">
         <div class="csv-instructions">
           <span style="font-size: 0.8rem; font-weight: 600; color: #475569; display: block; text-transform: uppercase; letter-spacing: 0.5px;">⚙️ Import groupé par CSV</span>
-          <p style="margin: 0.2rem 0 0; font-size: 0.82rem; color: #64748b;">Format attendu : <code style="background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px; font-family: monospace;">Nom, Email, Téléphone, Adresse</code> (Séparateur virgule ou point-virgule).</p>
+          <p style="margin: 0.2rem 0 0; font-size: 0.82rem; color: #64748b;">Format attendu : <code style="background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px; font-family: monospace;">Civilité;Prénom;Nom;Rue;N°;NPA;Localité;Email;Téléphone</code></p>
         </div>
-        <button @click="déclencherInputFichier" class="btn-secondary" style="margin-top: 0;">
+        <button @click="déclencherInputFichier" class="btn-secondary" style="margin-top: 0; flex-shrink:0;">
           📥 Importer un fichier CSV
         </button>
         <input id="csv-file-input" type="file" accept=".csv" @change="gererImportCSV" style="display: none;" />
@@ -98,21 +144,25 @@ const gererImportCSV = (event) => {
       <table class="standard-table">
         <thead>
           <tr>
-            <th>Nom</th>
+            <th>Nom complet</th>
+            <th>Adresse</th>
             <th>Email</th>
             <th>Téléphone</th>
-            <th>Adresse</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="c in clients" :key="c.id">
-            <td><strong>{{ c.nom }}</strong></td>
+            <td><strong>{{ nomComplet(c) }}</strong></td>
+            <td>{{ adresseComplet(c) }}</td>
             <td>{{ c.email || '—' }}</td>
             <td>{{ c.telephone || '—' }}</td>
-            <td>{{ c.adresse || '—' }}</td>
           </tr>
         </tbody>
       </table>
     </section>
   </div>
 </template>
+
+<style scoped>
+.field-lbl { font-size: 0.82rem; font-weight: 600; color: #7a5c30; display: block; margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.4px; }
+</style>

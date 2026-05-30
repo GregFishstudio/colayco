@@ -64,6 +64,19 @@ const fetchTousLesPrix = async () => {
   for (const m of metauxAvecAPI) await fetchPrixLive(m)
 }
 
+// ── Prestations personnalisées ────────────────────────────
+const nouvellePrestation = ref({ nom: '', prix: 0 })
+const ajouterPrestation = () => {
+  if (!nouvellePrestation.value.nom) return
+  props.config.prestations.push({
+    id: Date.now(),
+    nom: nouvellePrestation.value.nom,
+    prix: parseFloat(nouvellePrestation.value.prix) || 0
+  })
+  nouvellePrestation.value = { nom: '', prix: 0 }
+}
+const supprimerPrestation = (index) => props.config.prestations.splice(index, 1)
+
 // ── Pierres & Diamants ───────────────────────────────────
 const nouvellePierre = ref({ nom: 'Diamant', taille: '', prix: 0 })
 const ajouterPierre = () => {
@@ -200,6 +213,30 @@ const symboles = [
           <div class="row-input-group">
             <input v-model.number="config.tauxHoraire" type="number" step="1" min="0" />
             <span class="unit-tag">CHF/h</span>
+          </div>
+        </div>
+
+        <!-- Prestations personnalisées -->
+        <div v-if="config.prestations && config.prestations.length > 0" style="margin-top:0.75rem;">
+          <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:#4b7c59;margin-bottom:0.5rem;padding-top:0.5rem;border-top:1px solid #f0e8da;">
+            Prestations personnalisées
+          </div>
+          <div v-for="(p, index) in config.prestations" :key="p.id" class="prestation-row">
+            <input v-model="p.nom" type="text" class="prestation-name-input" placeholder="Nom de la prestation" />
+            <div class="prix-input-group">
+              <input v-model.number="p.prix" type="number" step="0.50" class="prix-input" />
+              <span class="prix-unit">CHF</span>
+            </div>
+            <button @click="supprimerPrestation(index)" class="btn-del" title="Supprimer">✕</button>
+          </div>
+        </div>
+
+        <div class="add-metal-form" style="margin-top:0.75rem;">
+          <div class="add-metal-title">＋ Ajouter une prestation</div>
+          <div class="add-metal-grid">
+            <input v-model="nouvellePrestation.nom" type="text" placeholder="Ex: Rhodiage, Polissage…" />
+            <input v-model.number="nouvellePrestation.prix" type="number" step="0.50" placeholder="CHF" style="width:100px;" />
+            <button @click="ajouterPrestation" class="btn-success" style="padding:0.5rem 1rem;">Ajouter</button>
           </div>
         </div>
       </section>
@@ -409,6 +446,20 @@ const symboles = [
   color: #14532d; padding: 0; width: 100%; outline: none; font-weight: 500;
 }
 .pierre-input:focus { border-bottom: 1px solid #22c55e; }
+
+/* ── Prestations list ────────────────── */
+.prestation-row {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: #f0fdf4; border: 1px solid #dcfce7;
+  border-radius: 8px; padding: 0.4rem 0.6rem; margin-bottom: 0.35rem;
+  transition: border-color 0.15s;
+}
+.prestation-row:hover { border-color: #86efac; }
+.prestation-name-input {
+  border: none; background: transparent; font-size: 0.9rem; font-weight: 600;
+  color: #14532d; padding: 0; flex: 1; outline: none;
+}
+.prestation-name-input:focus { border-bottom: 1px solid #22c55e; }
 
 .info-card { display: flex; flex-direction: column; gap: 0.6rem; }
 .info-icon { font-size: 1.8rem; }
