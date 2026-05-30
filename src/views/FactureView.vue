@@ -206,38 +206,38 @@ const _ajouterPageQR = async (pdf) => {
   pdf.setTextColor(0, 0, 0)
   const ibanFmt = (b.iban || '').toUpperCase()
   const rx = 5, ry = slipY + 5
-  pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.text('Empfangsschein', rx, ry + 4)
-  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Konto / Zahlbar an', rx, ry + 11)
+  pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.text('Récépissé', rx, ry + 4)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Compte / Payable à', rx, ry + 11)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
   pdf.text(ibanFmt, rx, ry + 15); pdf.text(b.nom || '', rx, ry + 19)
   pdf.text(b.adresse || '', rx, ry + 23); pdf.text(b.localite || '', rx, ry + 27)
-  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Zahlbar durch', rx, ry + 36)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Payable par', rx, ry + 36)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
   if (client) { pdf.text(cNom, rx, ry + 40); if (cAdL1) pdf.text(cAdL1, rx, ry + 44); if (cAdL2) pdf.text(cAdL2, rx, ry + 48) }
   pdf.setFontSize(6); pdf.setFont('helvetica', 'bold')
-  pdf.text('Währung', rx, ry + 62); pdf.text('Betrag', rx + 18, ry + 62)
+  pdf.text('Monnaie', rx, ry + 62); pdf.text('Montant', rx + 18, ry + 62)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
   pdf.text('CHF', rx, ry + 67); pdf.text(totalFinal.value.toFixed(2), rx + 18, ry + 67)
-  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Annahmestelle', 60, slipY + 100, { align: 'right' })
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Point de dépôt', 60, slipY + 100, { align: 'right' })
   const px = 67, py = slipY + 5
-  pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.text('Zahlteil', px, py + 4)
+  pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.text('Section paiement', px, py + 4)
   const qrX = px, qrY = py + 8
   pdf.addImage(qrDataUrl, 'PNG', qrX, qrY, 46, 46)
   const cx = qrX + 23 - 3.5, cy = qrY + 23 - 3.5
   pdf.setFillColor(255, 255, 255); pdf.rect(cx, cy, 7, 7, 'F')
   pdf.setFillColor(0, 0, 0); pdf.rect(cx + 2, cy + 0.5, 3, 6, 'F'); pdf.rect(cx + 0.5, cy + 2, 6, 3, 'F')
   pdf.setFontSize(6); pdf.setFont('helvetica', 'bold')
-  pdf.text('Währung', px, qrY + 50); pdf.text('Betrag', px + 25, qrY + 50)
+  pdf.text('Monnaie', px, qrY + 50); pdf.text('Montant', px + 25, qrY + 50)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10)
   pdf.text('CHF', px, qrY + 56); pdf.text(totalFinal.value.toFixed(2), px + 25, qrY + 56)
   const dx = px + 50, dy = py + 8
-  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Konto / Zahlbar an', dx, dy)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Compte / Payable à', dx, dy)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
   pdf.text(ibanFmt, dx, dy + 4); pdf.text(b.nom || '', dx, dy + 8)
   pdf.text(b.adresse || '', dx, dy + 12); pdf.text(b.localite || '', dx, dy + 16)
   pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Référence', dx, dy + 24)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8); pdf.text(numeroFacture.value, dx, dy + 28)
-  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Zahlbar durch', dx, dy + 36)
+  pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Payable par', dx, dy + 36)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
   if (client) { pdf.text(cNom, dx, dy + 40); if (cAdL1) pdf.text(cAdL1, dx, dy + 44); if (cAdL2) pdf.text(cAdL2, dx, dy + 48) }
 }
