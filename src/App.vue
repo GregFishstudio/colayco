@@ -9,6 +9,7 @@ import BoutiqueView from './views/BoutiqueView.vue'
 import DevisListeView from './views/DevisListeView.vue'
 import FactureView from './views/FactureView.vue'
 import FactureListeView from './views/FactureListeView.vue'
+import WoocommerceView from './views/WoocommerceView.vue'
 
 // L'onglet actif au démarrage
 const ongletActif = ref('devis')
@@ -64,6 +65,13 @@ const clients = ref([
   { id: 1, civilite: '', prenom: '', nom: 'Atelier Bijouterie Lausanne', rue: 'Rue de Bourg', numero: '12', npa: '1003', lieu: 'Lausanne', email: 'contact@lausanne-bijoux.ch', telephone: '021 311 00 00' },
   { id: 2, civilite: 'Madame', prenom: 'Sophie', nom: 'Martin', rue: 'Place Pury', numero: '4', npa: '2000', lieu: 'Neuchâtel', email: 'info@galeriene.ch', telephone: '032 721 00 00' }
 ])
+
+// --- DONNÉES PAR DÉFAUT WOOCOMMERCE ---
+const woocommerce = ref({
+  url: '',
+  consumerKey: '',
+  consumerSecret: ''
+})
 
 // --- LISTE DE STOCKAGE DE L'HISTORIQUE ---
 const devisListe = ref([])
@@ -129,6 +137,7 @@ onMounted(async () => {
       factureListe.value = data.factureListe.map(f => ({ ...f, statut: f.statut ?? 'Validé' }))
     }
     if (data.prochainNumeroFacture) prochainNumeroFacture.value = data.prochainNumeroFacture
+    if (data.woocommerce) woocommerce.value = data.woocommerce
     console.log("Données Colayco chargées avec succès.")
   } catch (e) {
     console.log("Aucun fichier colayco_data.json trouvé. Utilisation des valeurs par défaut.")
@@ -138,7 +147,7 @@ onMounted(async () => {
 })
 
 // --- SAUVEGARDE AUTOMATIQUE LOCAL FILE ---
-watch([boutique, config, clients, devisListe, prochainNumeroDevis, factureListe, prochainNumeroFacture], async () => {
+watch([boutique, config, clients, devisListe, prochainNumeroDevis, factureListe, prochainNumeroFacture, woocommerce], async () => {
   if (!ready.value) return
   try {
     const dataAEnregistrer = {
@@ -148,7 +157,8 @@ watch([boutique, config, clients, devisListe, prochainNumeroDevis, factureListe,
       devisListe: devisListe.value,
       prochainNumeroDevis: prochainNumeroDevis.value,
       factureListe: factureListe.value,
-      prochainNumeroFacture: prochainNumeroFacture.value
+      prochainNumeroFacture: prochainNumeroFacture.value,
+      woocommerce: woocommerce.value
     }
     await writeTextFile('colayco_data.json', JSON.stringify(dataAEnregistrer, null, 2), {
       baseDir: BaseDirectory.AppLocalData
@@ -180,7 +190,8 @@ const sauvegarderManuellement = async () => {
       devisListe: devisListe.value,
       prochainNumeroDevis: prochainNumeroDevis.value,
       factureListe: factureListe.value,
-      prochainNumeroFacture: prochainNumeroFacture.value
+      prochainNumeroFacture: prochainNumeroFacture.value,
+      woocommerce: woocommerce.value
     }, null, 2), { baseDir: BaseDirectory.AppLocalData })
     derniereSauvegarde.value = new Date().toISOString()  // valeur unique à chaque appel
   } catch (err) {
@@ -323,6 +334,16 @@ const chargerDevisCommeFacture = (devis) => {
           </span>
           Config. PDF
         </button>
+
+        <div class="nav-section-label" style="margin-top: 0.5rem;">Boutique en ligne</div>
+        <button :class="{ active: ongletActif === 'woocommerce' }" @click="ongletActif = 'woocommerce'">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/>
+            </svg>
+          </span>
+          WooCommerce
+        </button>
       </nav>
       <div class="sidebar-footer">Colayco Sarl &copy; 2026</div>
     </aside>
@@ -335,6 +356,7 @@ const chargerDevisCommeFacture = (devis) => {
       <ClientsView v-if="ongletActif === 'clients'" :clients="clients" @add-client="gererAjoutClient" />
       <ConfigView v-if="ongletActif === 'config'" :config="config" :derniereSauvegarde="derniereSauvegarde" @backup-data="exporterBackup" @sauvegarder="sauvegarderManuellement" />
       <BoutiqueView v-if="ongletActif === 'boutique'" :boutique="boutique" :config="config" :derniereSauvegarde="derniereSauvegarde" @update-logo="gererMiseAJourLogo" @select-pdf-folder="selectionnerDossierPDF" @sauvegarder="sauvegarderManuellement" />
+      <WoocommerceView v-if="ongletActif === 'woocommerce'" :wooConfig="woocommerce" @update:wooConfig="(v) => { woocommerce.value = v }" />
     </main>
   </div>
 </template>
