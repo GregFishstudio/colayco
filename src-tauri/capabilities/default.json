@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "opener:allow-open-path",
     "fs:default",
     {
       "identifier": "fs:allow-read-text-file",
@@ -43,6 +44,13 @@
     },
     "dialog:default",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://*/*" },
+        { "url": "https://*/*" }
+      ]
+    }
   ]
 }

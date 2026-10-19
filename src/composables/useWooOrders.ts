@@ -1,4 +1,5 @@
 import { ref, isRef, type Ref } from 'vue'
+import { wooFetch as fetch } from './wooHttp'
 
 export interface WCConfig {
   url: string
@@ -82,7 +83,11 @@ export function useWooOrders(config: Ref<WCConfig> | WCConfig) {
 
   function authHeader(): Record<string, string> {
     const c = cfg()
-    return { Authorization: `Basic ${btoa(`${c.consumerKey}:${c.consumerSecret}`)}` }
+    return {
+      Authorization: `Basic ${btoa(`${c.consumerKey}:${c.consumerSecret}`)}`,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Colayco-App/1.0',
+      'Accept': 'application/json',
+    }
   }
 
   function apiBase(): string {

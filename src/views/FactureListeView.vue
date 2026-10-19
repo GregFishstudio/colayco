@@ -1,11 +1,12 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
 import { save } from '@tauri-apps/plugin-dialog'
 import { writeFile, mkdir } from '@tauri-apps/plugin-fs'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { openPath } from '@tauri-apps/plugin-opener'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 import QRCode from 'qrcode'
+import { trouverPointsDeCoupeSurs, paginerCanvas, extraireBandeCanvas } from '../composables/pdfPagination'
 
 const props = defineProps({
   factureListe: Array,
@@ -17,6 +18,9 @@ const emit = defineEmits(['charger-facture'])
 
 const factureApercu = ref(null)
 const exportEnCours = ref(false)
+// Se souvient, par numéro de facture, du dernier PDF déjà exporté dans cette session :
+// "Imprimer" rouvre directement ce fichier au lieu de ré-exporter à chaque clic.
+const dernierPdfExportePar = ref({})
 
 // ── Recherche & filtres ──────────────────────────────────
 const recherche = ref('')
@@ -47,6 +51,40 @@ const htFromFacture = (facture) => {
   const m = props.config?.tvaMode ?? 'incluse'
   return m === 'incluse' ? (facture.totalTTC ?? 0) - tvaFromFacture(facture) : facture.totalTTC ?? 0
 }
+// Montant restant dû (utilisé pour le QR-bill) : le total déjà net de remise, moins l'acompte reçu
+const soldeFacture = (facture) => Math.max(0, (facture.totalTTC ?? 0) - (parseFloat(facture.acompte?.montant) || 0))
+
+const sectionsDeFacture = (facture) => {
+  const arts = facture.articles || []
+  const noms = []
+  for (const a of arts) {
+    const nom = a.groupe || ''
+    if (!noms.includes(nom)) noms.push(nom)
+  }
+  const rate = props.config?.tvaTaux ?? 8.1
+  const incluse = (props.config?.tvaMode ?? 'incluse') === 'incluse'
+  const remisesGroupes = facture.remisesGroupes || {}
+  const calc = (nom, list) => {
+    const ht = list.reduce((s, a) => s + a.quantite * a.prixUnitaire, 0)
+    const tva = incluse ? ht * rate / (100 + rate) : ht * rate / 100
+    const ttcBrut = incluse ? ht : ht + tva
+    const r = remisesGroupes[nom] || { active: false, mode: 'pourcent', valeur: 0 }
+    let remiseMontant = 0
+    if (r.active && r.valeur) {
+      const v = r.mode === 'pourcent' ? ttcBrut * r.valeur / 100 : r.valeur
+      remiseMontant = Math.round(Math.min(v, ttcBrut) * 100) / 100
+    }
+    return { ht, tva, ttcBrut, remiseMontant, remise: r, ttc: Math.max(0, ttcBrut - remiseMontant) }
+  }
+  return noms.map(nom => {
+    const items = arts.filter(a => (a.groupe || '') === nom)
+    return { nom, items, ...calc(nom, items) }
+  })
+}
+const modeGroupeFacture = (facture) => {
+  const s = sectionsDeFacture(facture)
+  return s.length > 1 || (s.length === 1 && s[0].nom !== '')
+}
 
 const ouvrirApercu = (facture) => { factureApercu.value = facture }
 const fermerApercu = () => { factureApercu.value = null }
@@ -65,22 +103,19 @@ const dupliquerFacture = (facture) => {
   emit('charger-facture', copie)
 }
 
-let _printGuard = false
-let _unlistenClose = null
-onMounted(async () => {
-  try {
-    _unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
-      if (_printGuard) event.preventDefault()
-    })
-  } catch (_) {}
-})
-onUnmounted(() => { if (_unlistenClose) _unlistenClose() })
-
-const imprimerApercu = async () => {
-  _printGuard = true
-  window.addEventListener('afterprint', () => { _printGuard = false }, { once: true })
-  window.print()
+// Le rendu QR via window.print() n'est pas fiable (timing de chargement de
+// l'image dans le moteur d'impression). On génère donc systématiquement le
+// PDF (où le QR est dessiné directement dans le document) puis on l'ouvre
+// avec l'application par défaut : l'impression se fait depuis le lecteur PDF.
+const imprimer = async (facture) => {
+  const chemin = dernierPdfExportePar.value[facture.numero]
+  if (chemin) {
+    try { await openPath(chemin); return } catch (_) {}
+  }
+  await exporterPDF(facture)
 }
+const imprimerApercu = () => imprimer(factureApercu.value)
+const imprimerDirectement = (facture) => imprimer(facture)
 
 const nomCompletClient = (c) => {
   if (!c) return ''
@@ -122,22 +157,34 @@ const exporterPDF = async (facture) => {
     element.classList.add('pdf-bw')
     await new Promise(r => setTimeout(r, 50))
 
-    const canvas = await html2canvas(element, { scale: 2, useCORS: true, allowTaint: true, logging: false, height: element.scrollHeight, windowHeight: element.scrollHeight, scrollY: 0 })
+    const scaleCapture = 2
+    const pointsDeCoupe = trouverPointsDeCoupeSurs(element, scaleCapture)
+    const canvas = await html2canvas(element, { scale: scaleCapture, useCORS: true, allowTaint: true, logging: false, height: element.scrollHeight, windowHeight: element.scrollHeight, scrollY: 0 })
     element.classList.remove('pdf-bw')
 
-    const imgData = canvas.toDataURL('image/png')
     const pdf = new jsPDF('p', 'mm', 'a4')
-    const pageW = 210, pageH = 297
-    const imgH = (canvas.height * pageW) / canvas.width
+    const pages = paginerCanvas(canvas, pointsDeCoupe, { margeHautMm: 13 })
+    const pxParMm = canvas.width / 210
+    pages.forEach((p, i) => {
+      if (i > 0) pdf.addPage()
+      const dataUrl = extraireBandeCanvas(canvas, p.from, p.to)
+      pdf.addImage(dataUrl, 'PNG', 0, p.margeHaut, 210, (p.to - p.from) / pxParMm)
+    })
 
-    pdf.addImage(imgData, 'PNG', 0, 0, pageW, imgH)
-    let remaining = imgH - pageH, yOffset = -pageH
-    while (remaining > 0) {
-      pdf.addPage(); pdf.addImage(imgData, 'PNG', 0, yOffset, pageW, imgH)
-      yOffset -= pageH; remaining -= pageH
-    }
+    // Page 2 : QR-bill suisse (pas de bulletin pour un paiement en magasin)
+    if (facture.delaiPaiement !== 'magasin') await _ajouterPageQR(pdf, facture)
 
-    // Page 2 : QR-bill suisse
+    await writeFile(cheminFichier, new Uint8Array(pdf.output('arraybuffer')))
+    dernierPdfExportePar.value[facture.numero] = cheminFichier
+    try { await openPath(cheminFichier) } catch (_) {}
+  } catch (err) {
+    console.error('Erreur export PDF:', err)
+    alert('Erreur lors de la génération du PDF.')
+  }
+  exportEnCours.value = false
+}
+
+const _ajouterPageQR = async (pdf, facture) => {
     const b = props.boutique
     const client = facture.client
     const cleanIBAN = (b?.iban || '').replace(/\s/g, '').toUpperCase()
@@ -147,8 +194,8 @@ const exporterPDF = async (facture) => {
     const qrLines = [
       'SPC', '0200', '1', cleanIBAN,
       'K', b?.nom || '', b?.adresse || '', `${postalCode} ${city}`.trim(), '', '', 'CH',
-      '', '', '', '', '', '',
-      (facture.totalTTC ?? 0).toFixed(2), 'CHF',
+      '', '', '', '', '', '', '',
+      soldeFacture(facture).toFixed(2), 'CHF',
       client ? 'K' : '', nomCompletClient(client), adresseLigne1(client), adresseLigne2(client), '', '', client ? 'CH' : '',
       'NON', '', `Facture ${facture.numero}`, 'EPD'
     ]
@@ -178,7 +225,7 @@ const exporterPDF = async (facture) => {
     pdf.setFontSize(6); pdf.setFont('helvetica', 'bold')
     pdf.text('Monnaie', rx, ry + 62); pdf.text('Montant', rx + 18, ry + 62)
     pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
-    pdf.text('CHF', rx, ry + 67); pdf.text((facture.totalTTC ?? 0).toFixed(2), rx + 18, ry + 67)
+    pdf.text('CHF', rx, ry + 67); pdf.text(soldeFacture(facture).toFixed(2), rx + 18, ry + 67)
     pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Point de dépôt', 60, slipY + 100, { align: 'right' })
 
     const px = 67, py = slipY + 5
@@ -191,7 +238,7 @@ const exporterPDF = async (facture) => {
     pdf.setFontSize(6); pdf.setFont('helvetica', 'bold')
     pdf.text('Monnaie', px, qrY + 50); pdf.text('Montant', px + 25, qrY + 50)
     pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10)
-    pdf.text('CHF', px, qrY + 56); pdf.text((facture.totalTTC ?? 0).toFixed(2), px + 25, qrY + 56)
+    pdf.text('CHF', px, qrY + 56); pdf.text(soldeFacture(facture).toFixed(2), px + 25, qrY + 56)
     const dx = px + 50, dy = py + 8
     pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Compte / Payable à', dx, dy)
     pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
@@ -202,14 +249,6 @@ const exporterPDF = async (facture) => {
     pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Payable par', dx, dy + 36)
     pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
     if (client) { const cN=nomCompletClient(client); const cA1=adresseLigne1(client); const cA2=adresseLigne2(client); pdf.text(cN, dx, dy + 40); if (cA1) pdf.text(cA1, dx, dy + 44); if (cA2) pdf.text(cA2, dx, dy + 48) }
-
-    await writeFile(cheminFichier, new Uint8Array(pdf.output('arraybuffer')))
-    alert(`PDF exporté !\n${cheminFichier}`)
-  } catch (err) {
-    console.error('Erreur export PDF:', err)
-    alert('Erreur lors de la génération du PDF.')
-  }
-  exportEnCours.value = false
 }
 </script>
 
@@ -231,7 +270,7 @@ const exporterPDF = async (facture) => {
           <button v-if="recherche" @click="recherche = ''" class="search-clear">✕</button>
         </div>
         <div class="filtre-chips">
-          <button v-for="f in ['Tous','Validé','Brouillon']" :key="f" :class="['chip', filtreStatut === f ? 'chip-active' : '']" @click="filtreStatut = f">{{ f }}</button>
+          <button v-for="f in ['Tous','Brouillon','Envoyée','Payée']" :key="f" :class="['chip', filtreStatut === f ? 'chip-active' : '']" @click="filtreStatut = f">{{ f }}</button>
         </div>
       </div>
 
@@ -258,7 +297,7 @@ const exporterPDF = async (facture) => {
           <tr v-for="(facture, index) in facturesFiltrees" :key="facture.numero">
             <td class="numero-cell">
               <span class="badge-number badge-facture">{{ facture.numero }}</span>
-              <span :class="['badge-statut', facture.statut === 'Validé' ? 'badge-valide' : 'badge-brouillon']">{{ facture.statut || 'Brouillon' }}</span>
+              <span :class="['badge-statut', facture.statut === 'Payée' ? 'badge-valide' : facture.statut === 'Envoyée' ? 'badge-envoyee' : 'badge-brouillon']">{{ facture.statut || 'Brouillon' }}</span>
             </td>
             <td class="date-cell">{{ facture.date }}</td>
             <td class="client-name">{{ nomCompletClient(facture.client) || '—' }}</td>
@@ -270,6 +309,11 @@ const exporterPDF = async (facture) => {
               <button @click="emit('charger-facture', facture)" class="btn-icon" title="Éditer">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </button>
+              <!-- TODO: bouton Imprimer action rapide
+              <button @click="imprimerDirectement(facture)" class="btn-icon" title="Imprimer">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              </button>
+              -->
               <button @click="dupliquerFacture(facture)" class="btn-icon" title="Dupliquer">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               </button>
@@ -347,32 +391,53 @@ const exporterPDF = async (facture) => {
 
               <div v-if="factureApercu.titreProjet" class="doc-project-title">{{ factureApercu.titreProjet }}</div>
 
-              <table class="invoice-table" style="margin-top:1.5rem;">
-                <thead>
-                  <tr>
-                    <th>Description</th>
-                    <th width="80" class="text-center">Qté</th>
-                    <th width="130" class="text-right">P.U. CHF</th>
-                    <th width="130" class="text-right">Total CHF</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="art in factureApercu.articles" :key="art.description + art.prixUnitaire">
-                    <td>{{ art.description }}</td>
-                    <td class="text-center">{{ art.quantite }}</td>
-                    <td class="text-right">{{ Number(art.prixUnitaire).toFixed(2) }}</td>
-                    <td class="text-right bold-text">{{ (art.quantite * art.prixUnitaire).toFixed(2) }}</td>
-                  </tr>
-                </tbody>
-              </table>
+              <div v-for="section in sectionsDeFacture(factureApercu)" :key="section.nom" class="groupe-bloc">
+                <div v-if="modeGroupeFacture(factureApercu) && section.nom" class="groupe-titre-apercu">{{ section.nom }}</div>
+                <div v-else-if="modeGroupeFacture(factureApercu)" class="groupe-titre-apercu">Commun</div>
+
+                <table class="invoice-table" style="margin-top:1rem;">
+                  <thead>
+                    <tr>
+                      <th>Description</th>
+                      <th width="80" class="text-center">Qté</th>
+                      <th width="130" class="text-right">P.U. CHF</th>
+                      <th width="130" class="text-right">Total CHF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="art in section.items" :key="art.description + art.prixUnitaire">
+                      <td style="white-space:pre-line;">{{ art.description }}</td>
+                      <td class="text-center">{{ art.quantite }}</td>
+                      <td class="text-right">{{ Number(art.prixUnitaire).toFixed(2) }}</td>
+                      <td class="text-right bold-text">{{ (art.quantite * art.prixUnitaire).toFixed(2) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <div v-if="modeGroupeFacture(factureApercu)" class="groupe-total-box">
+                  <template v-if="(config?.tvaMode ?? 'incluse') === 'incluse'">
+                    <div class="groupe-total-row"><span>dont TVA {{ config?.tvaTaux ?? 8.1 }}%</span><span>{{ section.tva.toFixed(2) }} CHF</span></div>
+                  </template>
+                  <template v-else>
+                    <div class="groupe-total-row"><span>Total HT</span><span>{{ section.ht.toFixed(2) }} CHF</span></div>
+                    <div class="groupe-total-row"><span>TVA {{ config?.tvaTaux ?? 8.1 }}%</span><span>{{ section.tva.toFixed(2) }} CHF</span></div>
+                  </template>
+                  <div v-if="section.remiseMontant > 0" class="groupe-total-row" style="color:#dc2626;">
+                    <span>Remise{{ section.remise.mode === 'pourcent' ? ' ' + section.remise.valeur + '%' : '' }}</span>
+                    <span>−{{ section.remiseMontant.toFixed(2) }} CHF</span>
+                  </div>
+                  <div class="groupe-total-ttc"><span>Total</span><span>{{ section.ttc.toFixed(2) }} CHF</span></div>
+                </div>
+              </div>
 
               <div class="apercu-footer" style="margin-top:2.5rem;">
                 <div class="apercu-legal">
                   <div class="legal-block">
                     <span class="legal-label">Conditions de paiement</span>
-                    <p class="legal-text">Payable à {{ factureApercu.delaiPaiement ?? 30 }} jours dès réception de la présente facture.</p>
+                    <p v-if="factureApercu.delaiPaiement === 'magasin'" class="legal-text">Payable directement en magasin (espèces ou carte).</p>
+                    <p v-else class="legal-text">Payable à {{ factureApercu.delaiPaiement ?? 30 }} jours dès réception de la présente facture.</p>
                   </div>
-                  <div v-if="boutique?.iban" class="legal-line">
+                  <div v-if="boutique?.iban && factureApercu.delaiPaiement !== 'magasin'" class="legal-line">
                     <span class="legal-label">IBAN :</span> {{ boutique.iban }}<span v-if="boutique?.banque"> · {{ boutique.banque }}</span>
                   </div>
                   <div v-if="boutique?.tvaNumero" class="legal-line">
@@ -431,7 +496,8 @@ const exporterPDF = async (facture) => {
 .numero-cell { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
 .badge-statut { font-size: 0.63rem; font-weight: 700; padding: 0.15rem 0.55rem; border-radius: 20px; letter-spacing: 0.3px; white-space: nowrap; }
 .badge-brouillon { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
-.badge-valide    { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.badge-envoyee   { background: #dbeafe; color: #1d4ed8; border: 1px solid #93c5fd; }
+.badge-valide    { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.55); backdrop-filter: blur(4px); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 1.5rem; }
 .modal-container { background: #f1f5f9; border-radius: 16px; width: 100%; max-width: 860px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 60px rgba(15,23,42,0.3); overflow: hidden; }
@@ -462,6 +528,14 @@ const exporterPDF = async (facture) => {
 .grand-total { font-size: 1.05rem; font-weight: 800; color: #0f172a; border-top: 2px solid #0f172a; padding-top: 0.5rem; margin-top: 0.15rem; }
 
 .doc-project-title { font-size: 0.95rem; font-weight: 700; color: #0f172a; margin: 1rem 0 0.75rem; padding-bottom: 0.6rem; border-bottom: 1px solid #e2e8f0; }
+
+/* ── Sections par groupe (Alliance Marie / Alliance Marco / etc.) ── */
+.groupe-bloc { margin-bottom: 1.5rem; }
+.groupe-bloc:last-of-type { margin-bottom: 0; }
+.groupe-titre-apercu { font-size: 0.95rem; font-weight: 800; color: #0f172a; padding-bottom: 0.4rem; border-bottom: 1.5px solid #0f172a; }
+.groupe-total-box { display: flex; flex-direction: column; align-items: flex-end; gap: 0.15rem; margin-top: 0.5rem; }
+.groupe-total-row { display: flex; justify-content: space-between; width: 220px; font-size: 0.78rem; color: #64748b; padding: 0.1rem 0; }
+.groupe-total-ttc { display: flex; justify-content: space-between; width: 220px; font-weight: 800; font-size: 0.85rem; padding-top: 0.3rem; margin-top: 0.15rem; border-top: 1px solid #e2e8f0; color: #0f172a; }
 
 @media print {
   .modal-overlay { background: none !important; position: static !important; padding: 0 !important; display: block !important; }

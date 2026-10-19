@@ -1,11 +1,13 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { save } from '@tauri-apps/plugin-dialog'
 import { writeFile, mkdir } from '@tauri-apps/plugin-fs'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { openPath } from '@tauri-apps/plugin-opener'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 import QRCode from 'qrcode'
+import ClientAutocomplete from '../components/ClientAutocomplete.vue'
+import { trouverPointsDeCoupeSurs, paginerCanvas, extraireBandeCanvas } from '../composables/pdfPagination'
 
 const props = defineProps({
   config: Object,
@@ -21,9 +23,10 @@ const genererNumero = (n) => `FAC-${new Date().getFullYear()}-${String(n).padSta
 const numeroFacture = ref(genererNumero(props.prochainNumeroFacture))
 const dateFacture = ref(new Date().toISOString().split('T')[0])
 const clientSelectionne = ref('')
-const factureArticles = ref([{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0 }])
+const factureArticles = ref([{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0, groupe: '' }])
 const titreProjet = ref('')
 const modeApercu = ref(false)
+const raccourcisOuvert = ref(false)
 const delaiPaiement = ref(30)
 const remise = ref({ active: false, mode: 'pourcent', valeur: 0 })
 const arrondi = ref(false)
@@ -31,6 +34,8 @@ const acompte = ref({ montant: 0, date: '' })
 const ftReady = ref(false)
 const sauvegardeTimer = ref(null)
 const notifValidation = ref(false)
+const exportEnCours = ref(false)
+const notifPdfExport = ref(null)
 
 const statutCourant = computed(() =>
   props.facturesListe.find(f => f.numero === numeroFacture.value)?.statut ?? null
@@ -41,6 +46,7 @@ const construireObjetFacture = (statut) => ({
   client: clientSelectionne.value ? { ...clientSelectionne.value } : null,
   articles: JSON.parse(JSON.stringify(factureArticles.value)),
   remise: JSON.parse(JSON.stringify(remise.value)),
+  remisesGroupes: JSON.parse(JSON.stringify(groupeRemises.value)),
   arrondi: arrondi.value,
   acompte: JSON.parse(JSON.stringify(acompte.value)),
   delaiPaiement: delaiPaiement.value,
@@ -57,20 +63,11 @@ const sauvegardeAutomatique = () => {
   }, 1500)
 }
 
-watch([factureArticles, numeroFacture, dateFacture, clientSelectionne, titreProjet, remise, arrondi, acompte, delaiPaiement], sauvegardeAutomatique, { deep: true })
-let _printGuard = false
-let _unlistenClose = null
-onMounted(async () => {
+onMounted(() => {
   setTimeout(() => { ftReady.value = true }, 400)
-  try {
-    _unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
-      if (_printGuard) event.preventDefault()
-    })
-  } catch (_) {}
 })
 onUnmounted(() => {
   clearTimeout(sauvegardeTimer.value)
-  if (_unlistenClose) _unlistenClose()
 })
 
 const totalHT = computed(() => factureArticles.value.reduce((s, a) => s + a.quantite * a.prixUnitaire, 0))
@@ -78,18 +75,90 @@ const tvaTaux = computed(() => props.config.tvaTaux ?? 8.1)
 const tvaIncluse = computed(() => (props.config.tvaMode ?? 'incluse') === 'incluse')
 const tva = computed(() => tvaIncluse.value ? totalHT.value * tvaTaux.value / (100 + tvaTaux.value) : totalHT.value * tvaTaux.value / 100)
 const totalTTC = computed(() => tvaIncluse.value ? totalHT.value : totalHT.value + tva.value)
+
+// Groupe actif : détermine dans quelle section atterrissent les nouvelles lignes
+// (raccourcis tarifs, bouton "+ Ajouter une ligne")
+const groupeActif = ref('')
+// Remise propre à chaque groupe (ex: 10% sur la main d'œuvre mais pas sur la matière,
+// ou une remise seulement sur le groupe "Madame" et pas "Monsieur")
+const groupeRemises = ref({})
+const remiseDeGroupe = (nom) => groupeRemises.value[nom] || { active: false, mode: 'pourcent', valeur: 0 }
+const assurerRemiseGroupe = (nom) => {
+  if (!groupeRemises.value[nom]) groupeRemises.value[nom] = { active: false, mode: 'pourcent', valeur: 0 }
+  return groupeRemises.value[nom]
+}
+
+const calculerTotauxGroupe = (nom, arts) => {
+  const ht = arts.reduce((s, a) => s + a.quantite * a.prixUnitaire, 0)
+  const tvaG = tvaIncluse.value ? ht * tvaTaux.value / (100 + tvaTaux.value) : ht * tvaTaux.value / 100
+  const ttcBrut = tvaIncluse.value ? ht : ht + tvaG
+  const r = remiseDeGroupe(nom)
+  let remiseMontant = 0
+  if (r.active && r.valeur) {
+    const v = r.mode === 'pourcent' ? ttcBrut * r.valeur / 100 : r.valeur
+    remiseMontant = Math.round(Math.min(v, ttcBrut) * 100) / 100
+  }
+  const ttc = Math.max(0, ttcBrut - remiseMontant)
+  return { ht, tva: tvaG, ttcBrut, remiseMontant, ttc }
+}
+const sections = computed(() => {
+  const noms = []
+  for (const a of factureArticles.value) {
+    const nom = a.groupe || ''
+    if (!noms.includes(nom)) noms.push(nom)
+  }
+  return noms.map(nom => {
+    const items = []
+    factureArticles.value.forEach((art, index) => { if ((art.groupe || '') === nom) items.push({ art, index }) })
+    return { nom, items, ...calculerTotauxGroupe(nom, items.map(i => i.art)) }
+  })
+})
+// Mode "sections nommées" affiché seulement si plusieurs groupes existent ou qu'un nom a été donné
+const modeGroupe = computed(() => sections.value.length > 1 || (sections.value.length === 1 && sections.value[0].nom !== ''))
+
+// Base du total général = somme des totaux de groupe, chacun déjà net de sa propre remise
+const totalApresRemisesGroupes = computed(() => sections.value.reduce((s, sec) => s + sec.ttc, 0))
 const montantRemise = computed(() => {
   if (!remise.value.active || !remise.value.valeur) return 0
-  const v = remise.value.mode === 'pourcent' ? totalTTC.value * remise.value.valeur / 100 : remise.value.valeur
-  return Math.round(Math.min(v, totalTTC.value) * 100) / 100
+  const v = remise.value.mode === 'pourcent' ? totalApresRemisesGroupes.value * remise.value.valeur / 100 : remise.value.valeur
+  return Math.round(Math.min(v, totalApresRemisesGroupes.value) * 100) / 100
 })
-const totalApresRemise = computed(() => Math.max(0, totalTTC.value - montantRemise.value))
+const totalApresRemise = computed(() => Math.max(0, totalApresRemisesGroupes.value - montantRemise.value))
 const arrondiDiff = computed(() => arrondi.value ? Math.round(totalApresRemise.value * 20) / 20 - totalApresRemise.value : 0)
 const totalFinal = computed(() => Math.round((totalApresRemise.value + arrondiDiff.value) * 100) / 100)
 const solde = computed(() => Math.max(0, totalFinal.value - (parseFloat(acompte.value.montant) || 0)))
 
-const ajouterLigne = (desc = '', prix = 0) => factureArticles.value.push({ description: desc, quantite: 1, prixUnitaire: prix })
+watch([factureArticles, numeroFacture, dateFacture, clientSelectionne, titreProjet, remise, groupeRemises, arrondi, acompte, delaiPaiement], sauvegardeAutomatique, { deep: true })
+
+const ajouterLigne = (desc = '', prix = 0, groupe = groupeActif.value) => factureArticles.value.push({ description: desc, quantite: 1, prixUnitaire: prix, groupe })
+const ajouterLigneDansGroupe = (nom) => ajouterLigne('', 0, nom)
 const supprimerArticle = (index) => factureArticles.value.splice(index, 1)
+
+const ajouterGroupe = () => {
+  const nom = prompt('Nom du groupe (ex: Alliance Marie) :', '')
+  if (nom === null) return
+  const trimmed = nom.trim()
+  if (!trimmed) { alert('Nom invalide.'); return }
+  groupeActif.value = trimmed
+  assurerRemiseGroupe(trimmed)
+  ajouterLigneDansGroupe(trimmed)
+}
+const renommerGroupe = (ancien, nouveau) => {
+  const trimmed = nouveau.trim()
+  factureArticles.value.forEach(a => { if ((a.groupe || '') === ancien) a.groupe = trimmed })
+  if (groupeActif.value === ancien) groupeActif.value = trimmed
+  if (ancien !== trimmed && groupeRemises.value[ancien]) {
+    groupeRemises.value[trimmed] = groupeRemises.value[ancien]
+    delete groupeRemises.value[ancien]
+  }
+}
+const supprimerGroupe = (nom) => {
+  if (!confirm(`Supprimer le groupe "${nom || 'Commun'}" et ses lignes ?`)) return
+  factureArticles.value = factureArticles.value.filter(a => (a.groupe || '') !== nom)
+  if (factureArticles.value.length === 0) factureArticles.value.push({ description: '', quantite: 1, prixUnitaire: 0, groupe: '' })
+  if (groupeActif.value === nom) groupeActif.value = ''
+  delete groupeRemises.value[nom]
+}
 
 const injecterConfigAuDevis = (type) => {
   if (type === 'cire') ajouterLigne('Forfait Fonte Cire Perdue', props.config.cirePerdue)
@@ -105,7 +174,7 @@ const injecterMetalAuPoids = (metal) => {
   if (isNaN(poids) || poids <= 0) { alert('Valeur invalide.'); return }
   const facteur = 1 + perteMetal / 100
   const desc = perteMetal > 0 ? `${metal.nom} (${poids.toFixed(2)} g + ${perteMetal}% perte à ${metal.prixGramme.toFixed(2)} CHF/g)` : `${metal.nom} (${poids.toFixed(2)} g × ${metal.prixGramme.toFixed(2)} CHF/g)`
-  factureArticles.value.push({ description: desc, quantite: 1, prixUnitaire: poids * metal.prixGramme * facteur })
+  ajouterLigne(desc, poids * metal.prixGramme * facteur)
 }
 
 const injecterMainOeuvre = () => {
@@ -114,7 +183,7 @@ const injecterMainOeuvre = () => {
   if (s === null) return
   const h = parseFloat(s.replace(',', '.'))
   if (isNaN(h) || h <= 0) { alert('Valeur invalide.'); return }
-  factureArticles.value.push({ description: `Main d'œuvre : ${h.toFixed(2)} h à ${t.toFixed(2)} CHF/h`, quantite: 1, prixUnitaire: h * t })
+  ajouterLigne(`Main d'œuvre : ${h.toFixed(2)} h à ${t.toFixed(2)} CHF/h`, h * t)
 }
 
 const injecterDiamantAuDevis = (dia) => {
@@ -122,13 +191,20 @@ const injecterDiamantAuDevis = (dia) => {
   if (s === null) return
   const qte = parseInt(s, 10)
   if (isNaN(qte) || qte <= 0) { alert('Quantité invalide.'); return }
-  factureArticles.value.push({ description: `${dia.nom || 'Diamant'} (${dia.taille})`, quantite: qte, prixUnitaire: dia.prix })
+  factureArticles.value.push({ description: `${dia.nom || 'Diamant'} (${dia.taille})`, quantite: qte, prixUnitaire: dia.prix, groupe: groupeActif.value })
+}
+
+const marquerEnvoyee = () => {
+  clearTimeout(sauvegardeTimer.value)
+  const obj = construireObjetFacture('Envoyée')
+  const idx = props.facturesListe.findIndex(f => f.numero === numeroFacture.value)
+  if (idx !== -1) { props.facturesListe[idx] = obj } else { props.facturesListe.push(obj); emit('facture-numero-utilise') }
 }
 
 const validerFacture = () => {
   if (!clientSelectionne.value) { alert("Sélectionnez d'abord un client pour valider cette facture."); return }
   clearTimeout(sauvegardeTimer.value)
-  const obj = construireObjetFacture('Validé')
+  const obj = construireObjetFacture('Payée')
   const idx = props.facturesListe.findIndex(f => f.numero === numeroFacture.value)
   if (idx !== -1) { props.facturesListe[idx] = obj } else { props.facturesListe.push(obj); emit('facture-numero-utilise') }
   notifValidation.value = true
@@ -141,10 +217,11 @@ const réinitialiserEditeur = () => {
   numeroFacture.value = genererNumero(props.prochainNumeroFacture)
   dateFacture.value = new Date().toISOString().split('T')[0]
   clientSelectionne.value = ''
-  factureArticles.value = [{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0 }]
+  factureArticles.value = [{ description: 'Création artisanale sur-mesure', quantite: 1, prixUnitaire: 0, groupe: '' }]
   titreProjet.value = ''
   remise.value = { active: false, mode: 'pourcent', valeur: 0 }
-  arrondi.value = false; acompte.value = { montant: 0, date: '' }; delaiPaiement.value = 30; modeApercu.value = false
+  groupeRemises.value = {}
+  arrondi.value = false; acompte.value = { montant: 0, date: '' }; delaiPaiement.value = 30; modeApercu.value = false; groupeActif.value = ''
   setTimeout(() => { ftReady.value = true }, 400)
 }
 
@@ -152,6 +229,8 @@ const chargerFactureExistant = (facture) => {
   ftReady.value = false; clearTimeout(sauvegardeTimer.value)
   numeroFacture.value = facture.numero; dateFacture.value = facture.date
   factureArticles.value = JSON.parse(JSON.stringify(facture.articles))
+  groupeActif.value = ''
+  groupeRemises.value = facture.remisesGroupes ? JSON.parse(JSON.stringify(facture.remisesGroupes)) : {}
   remise.value = facture.remise ? JSON.parse(JSON.stringify(facture.remise)) : { active: false, mode: 'pourcent', valeur: 0 }
   arrondi.value = facture.arrondi || false
   acompte.value = facture.acompte ? JSON.parse(JSON.stringify(facture.acompte)) : { montant: 0, date: '' }
@@ -163,20 +242,41 @@ const chargerFactureExistant = (facture) => {
 defineExpose({ chargerFactureExistant })
 
 // ── Imprimer ─────────────────────────────────────────────
+// Impression directe (fenêtre d'impression du système), avec le bulletin QR
+// suisse ajouté en page 2 (sauf en mode "paiement en magasin"). L'image QR
+// est entièrement décodée (img.decode()) avant d'ouvrir la boîte de dialogue
+// d'impression, pour éviter qu'elle apparaisse vide sur certains moteurs.
+const qrPrintDataUrl = ref('')
 const imprimer = async () => {
   const wasApercu = modeApercu.value
   modeApercu.value = true
-  await new Promise(r => setTimeout(r, 200))
-  _printGuard = true
+  if (props.boutique?.iban && delaiPaiement.value !== 'magasin') {
+    try { qrPrintDataUrl.value = await _genererQRData() } catch (_) {}
+  }
+  await nextTick()
+  const imgEl = document.querySelector('.qr-code-img')
+  if (imgEl) {
+    try { await (imgEl.decode ? imgEl.decode() : new Promise(r => { imgEl.onload = r; imgEl.onerror = r })) } catch (_) {}
+  }
+  await new Promise(r => setTimeout(r, 150))
   window.addEventListener('afterprint', () => {
-    _printGuard = false
+    qrPrintDataUrl.value = ''
     if (!wasApercu) modeApercu.value = false
   }, { once: true })
   window.print()
 }
 
-// ── QR-bill page (partagée entre imprimer et exporterPDF) ─
-const _ajouterPageQR = async (pdf) => {
+const ouvrirDernierPdf = async () => {
+  if (!notifPdfExport.value?.chemin) return
+  try {
+    await openPath(notifPdfExport.value.chemin)
+  } catch (err) {
+    console.error(err)
+    alert("Impossible d'ouvrir le PDF automatiquement. Chemin du fichier :\n" + notifPdfExport.value.chemin)
+  }
+}
+
+const _genererQRData = async () => {
   const b = props.boutique
   const client = clientSelectionne.value
   const cleanIBAN = (b.iban || '').replace(/\s/g, '').toUpperCase()
@@ -189,12 +289,23 @@ const _ajouterPageQR = async (pdf) => {
   const qrLines = [
     'SPC', '0200', '1', cleanIBAN,
     'K', b.nom || '', b.adresse || '', `${postalCode} ${city}`.trim(), '', '', 'CH',
-    '', '', '', '', '', '',
-    totalFinal.value.toFixed(2), 'CHF',
+    '', '', '', '', '', '', '',
+    solde.value.toFixed(2), 'CHF',
     client ? 'K' : '', cNom, cAdL1, cAdL2, '', '', client ? 'CH' : '',
     'NON', '', `Facture ${numeroFacture.value}`, 'EPD'
   ]
-  const qrDataUrl = await QRCode.toDataURL(qrLines.join('\n'), { width: 460, margin: 1, color: { dark: '#000000', light: '#ffffff' } })
+  return QRCode.toDataURL(qrLines.join('\n'), { width: 460, margin: 1, color: { dark: '#000000', light: '#ffffff' } })
+}
+
+// ── QR-bill page (utilisée par exporterPDF) ───────────────
+const _ajouterPageQR = async (pdf) => {
+  const b = props.boutique
+  const client = clientSelectionne.value
+  const cleanIBAN = (b.iban || '').replace(/\s/g, '').toUpperCase()
+  const cNom = client ? nomCompletClient(client) : ''
+  const cAdL1 = client ? adresseLigne1(client) : ''
+  const cAdL2 = client ? adresseLigne2(client) : ''
+  const qrDataUrl = await _genererQRData()
   const pageW = 210, pageH = 297
   pdf.addPage()
   const slipY = 192
@@ -217,7 +328,7 @@ const _ajouterPageQR = async (pdf) => {
   pdf.setFontSize(6); pdf.setFont('helvetica', 'bold')
   pdf.text('Monnaie', rx, ry + 62); pdf.text('Montant', rx + 18, ry + 62)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
-  pdf.text('CHF', rx, ry + 67); pdf.text(totalFinal.value.toFixed(2), rx + 18, ry + 67)
+  pdf.text('CHF', rx, ry + 67); pdf.text(solde.value.toFixed(2), rx + 18, ry + 67)
   pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Point de dépôt', 60, slipY + 100, { align: 'right' })
   const px = 67, py = slipY + 5
   pdf.setFontSize(11); pdf.setFont('helvetica', 'bold'); pdf.text('Section paiement', px, py + 4)
@@ -229,7 +340,7 @@ const _ajouterPageQR = async (pdf) => {
   pdf.setFontSize(6); pdf.setFont('helvetica', 'bold')
   pdf.text('Monnaie', px, qrY + 50); pdf.text('Montant', px + 25, qrY + 50)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10)
-  pdf.text('CHF', px, qrY + 56); pdf.text(totalFinal.value.toFixed(2), px + 25, qrY + 56)
+  pdf.text('CHF', px, qrY + 56); pdf.text(solde.value.toFixed(2), px + 25, qrY + 56)
   const dx = px + 50, dy = py + 8
   pdf.setFontSize(6); pdf.setFont('helvetica', 'bold'); pdf.text('Compte / Payable à', dx, dy)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
@@ -260,6 +371,8 @@ const adresseLigne2 = (c) => {
 const sanitiserNom = (nom) => (nom || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim() || 'Client'
 
 const exporterPDF = async () => {
+  exportEnCours.value = true
+  notifPdfExport.value = null
   try {
     const dossierBase = props.config.dossierPDF
     const nomClient = sanitiserNom(nomCompletClient(clientSelectionne.value) || 'Sans_Nom')
@@ -271,7 +384,7 @@ const exporterPDF = async () => {
       cheminFichier = `${dossierBase}/${nomClient}/${nomFichier}`
     } else {
       cheminFichier = await save({ filters: [{ name: 'Document PDF', extensions: ['pdf'] }], defaultPath: nomFichier })
-      if (!cheminFichier) return
+      if (!cheminFichier) { exportEnCours.value = false; return }
     }
 
     const wasApercu = modeApercu.value
@@ -282,27 +395,33 @@ const exporterPDF = async () => {
     element.classList.add('pdf-bw')
     await new Promise(r => setTimeout(r, 50))
 
-    const canvas = await html2canvas(element, { scale: 2, useCORS: true, allowTaint: true, logging: false, height: element.scrollHeight, windowHeight: element.scrollHeight, scrollY: 0 })
+    const scaleCapture = 2
+    const pointsDeCoupe = trouverPointsDeCoupeSurs(element, scaleCapture)
+    const canvas = await html2canvas(element, { scale: scaleCapture, useCORS: true, allowTaint: true, logging: false, height: element.scrollHeight, windowHeight: element.scrollHeight, scrollY: 0 })
     element.classList.remove('pdf-bw')
 
     const pdf = new jsPDF('p', 'mm', 'a4')
-    const pageW = 210, pageH = 297
-    const imgH = (canvas.height * pageW) / canvas.width
-    const imgData = canvas.toDataURL('image/png')
-    pdf.addImage(imgData, 'PNG', 0, 0, pageW, imgH)
-    let remaining = imgH - pageH, yOff = -pageH
-    while (remaining > 0) { pdf.addPage(); pdf.addImage(imgData, 'PNG', 0, yOff, pageW, imgH); yOff -= pageH; remaining -= pageH }
+    const pages = paginerCanvas(canvas, pointsDeCoupe, { margeHautMm: 13 })
+    const pxParMm = canvas.width / 210
+    pages.forEach((p, i) => {
+      if (i > 0) pdf.addPage()
+      const dataUrl = extraireBandeCanvas(canvas, p.from, p.to)
+      pdf.addImage(dataUrl, 'PNG', 0, p.margeHaut, 210, (p.to - p.from) / pxParMm)
+    })
 
-    // ── Page 2 : QR-bill suisse ──────────────────────────
-    await _ajouterPageQR(pdf)
+    // ── Page 2 : QR-bill suisse (pas de bulletin pour un paiement en magasin) ──
+    if (delaiPaiement.value !== 'magasin') await _ajouterPageQR(pdf)
 
     await writeFile(cheminFichier, new Uint8Array(pdf.output('arraybuffer')))
     modeApercu.value = wasApercu
-    alert(`PDF enregistré !\n${cheminFichier}`)
+    notifPdfExport.value = { chemin: cheminFichier }
+    setTimeout(() => { if (notifPdfExport.value?.chemin === cheminFichier) notifPdfExport.value = null }, 8000)
+    try { await openPath(cheminFichier) } catch (_) {}
   } catch (err) {
     console.error(err)
     alert("Erreur lors de la génération du PDF.")
   }
+  exportEnCours.value = false
 }
 </script>
 
@@ -311,6 +430,19 @@ const exporterPDF = async () => {
     <Transition name="toast">
       <div v-if="notifValidation" class="toast-valide">✓ Facture validée et enregistrée !</div>
     </Transition>
+    <Transition name="pdf-modal">
+      <div v-if="notifPdfExport" class="pdf-export-banner no-print">
+        <div class="pdf-export-icon">✓</div>
+        <div class="pdf-export-text">
+          <div class="pdf-export-title">PDF exporté avec succès</div>
+          <div class="pdf-export-sub">{{ notifPdfExport.chemin }}</div>
+        </div>
+        <div class="pdf-export-actions">
+          <button type="button" class="btn-success" style="margin-top:0;" @click="ouvrirDernierPdf">Ouvrir le PDF</button>
+          <button type="button" class="pdf-export-close" @click="notifPdfExport = null">✕</button>
+        </div>
+      </div>
+    </Transition>
 
     <!-- Header masqué en aperçu -->
     <header class="header no-print" v-if="!modeApercu">
@@ -318,7 +450,8 @@ const exporterPDF = async () => {
         <h2>Éditeur de Facture</h2>
         <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.2rem;">
           <p class="subtitle" style="margin:0;">Créez et exportez une facture professionnelle.</p>
-          <span v-if="statutCourant === 'Validé'" class="statut-pill statut-valide">✓ Validée</span>
+          <span v-if="statutCourant === 'Payée'" class="statut-pill statut-valide">✓ Payée</span>
+          <span v-else-if="statutCourant === 'Envoyée'" class="statut-pill statut-envoyee">➤ Envoyée</span>
           <span v-else-if="statutCourant === 'Brouillon'" class="statut-pill statut-brouillon">● Brouillon</span>
           <span v-else class="statut-pill statut-nouveau">◎ Nouvelle</span>
         </div>
@@ -328,21 +461,21 @@ const exporterPDF = async () => {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Nouveau
         </button>
-        <button @click="modeApercu = true" class="btn-secondary" style="margin-top:0;">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          Aperçu
-        </button>
-        <button @click="imprimer" class="btn-secondary" style="margin-top:0;">
+        <button @click="imprimer" class="btn-secondary" style="margin-top:0;" title="Ouvre la fenêtre d'impression du système (avec le bulletin QR en page 2, sauf paiement en magasin).">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           Imprimer
         </button>
+        <button @click="marquerEnvoyee" class="btn-secondary" style="margin-top:0;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          Marquer envoyée
+        </button>
         <button @click="validerFacture" class="btn-valider">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          Valider
+          Marquer payée
         </button>
-        <button @click="exporterPDF" class="btn-success">
+        <button @click="exporterPDF" class="btn-success" :disabled="exportEnCours" title="Génère le PDF complet (avec bulletin QR de paiement) et l'ouvre.">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Exporter PDF
+          {{ exportEnCours ? 'Export en cours…' : 'Exporter PDF' }}
         </button>
       </div>
     </header>
@@ -361,10 +494,7 @@ const exporterPDF = async () => {
         </div>
         <div>
           <label class="field-lbl">Client Destinataire</label>
-          <select v-model="clientSelectionne" class="select-client" style="padding:0.53rem;">
-            <option value="">— Sélectionner un client —</option>
-            <option v-for="c in clients" :key="c.id" :value="c">{{ nomCompletClient(c) }}</option>
-          </select>
+          <ClientAutocomplete v-model="clientSelectionne" :clients="clients" />
         </div>
       </div>
       <div style="margin-top:0.875rem;">
@@ -376,6 +506,7 @@ const exporterPDF = async () => {
         <div class="delai-toggle">
           <button :class="['delai-btn', delaiPaiement === 10 ? 'active' : '']" @click="delaiPaiement = 10">10 jours</button>
           <button :class="['delai-btn', delaiPaiement === 30 ? 'active' : '']" @click="delaiPaiement = 30">30 jours</button>
+          <button :class="['delai-btn', delaiPaiement === 'magasin' ? 'active' : '']" @click="delaiPaiement = 'magasin'">Paiement en magasin</button>
         </div>
       </div>
     </section>
@@ -391,31 +522,48 @@ const exporterPDF = async () => {
 
       <!-- Raccourcis tarifs (éditeur seulement) -->
       <div class="quick-actions no-print" v-if="!modeApercu">
-        <h4>Raccourcis Tarifs</h4>
-        <div class="quick-section">
-          <span class="quick-label">Atelier :</span>
-          <div class="btn-group">
-            <button @click="injecterConfigAuDevis('cire')">Cire perdue · {{ config.cirePerdue }}.-</button>
-            <button @click="injecterConfigAuDevis('3d')">Impression 3D · {{ config.impression3d }}.-</button>
-            <button @click="injecterMainOeuvre">Main-d'œuvre · {{ config.tauxHoraire }} CHF/h</button>
+        <button type="button" class="quick-actions-toggle" @click="raccourcisOuvert = !raccourcisOuvert">
+          <svg :class="['chevron-icon', raccourcisOuvert ? 'chevron-open' : '']" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          <h4>Raccourcis Tarifs</h4>
+        </button>
+        <div v-if="raccourcisOuvert" class="quick-actions-body">
+          <div class="quick-section">
+            <span class="quick-label">Atelier :</span>
+            <div class="btn-group">
+              <button @click="injecterConfigAuDevis('cire')">Cire perdue · {{ config.cirePerdue }}.-</button>
+              <button @click="injecterConfigAuDevis('3d')">Impression 3D · {{ config.impression3d }}.-</button>
+              <button @click="injecterMainOeuvre">Main-d'œuvre · {{ config.tauxHoraire }} CHF/h</button>
+            </div>
           </div>
-        </div>
-        <div class="quick-section" v-if="config.prestations?.length > 0">
-          <span class="quick-label">Prestations :</span>
-          <div class="btn-group">
-            <button v-for="p in config.prestations" :key="p.id" @click="injecterPrestation(p)">{{ p.nom }} · {{ p.prix }}.-</button>
+          <div class="quick-section" v-if="config.prestations?.length > 0">
+            <span class="quick-label">Prestations :</span>
+            <div class="btn-group">
+              <button v-for="p in config.prestations" :key="p.id" @click="injecterPrestation(p)">{{ p.nom }} · {{ p.prix }}.-</button>
+            </div>
           </div>
-        </div>
-        <div class="quick-section">
-          <span class="quick-label">Matières :</span>
-          <div class="btn-group">
-            <button v-for="m in config.metaux" :key="m.id" @click="injecterMetalAuPoids(m)">{{ m.nom }} · {{ m.prixGramme }} CHF/g</button>
+          <div class="quick-section">
+            <span class="quick-label">Matières :</span>
+            <div class="btn-group">
+              <button v-for="m in config.metaux" :key="m.id" @click="injecterMetalAuPoids(m)">{{ m.nom }} · {{ m.prixGramme }} CHF/g</button>
+            </div>
           </div>
-        </div>
-        <div class="quick-section" v-if="config.diamants?.length > 0">
-          <span class="quick-label">Pierres :</span>
-          <div class="btn-group-diamonds">
-            <button v-for="d in config.diamants" :key="d.id" @click="injecterDiamantAuDevis(d)">{{ d.nom }} {{ d.taille }}</button>
+          <div class="quick-section" v-if="config.diamants?.length > 0">
+            <span class="quick-label">Pierres :</span>
+            <div class="btn-group-diamonds">
+              <button v-for="d in config.diamants" :key="d.id" @click="injecterDiamantAuDevis(d)">{{ d.nom }} {{ d.taille }}</button>
+            </div>
+          </div>
+          <div class="quick-section">
+            <span class="quick-label">Ajouter dans :</span>
+            <div class="btn-group" style="align-items:center;">
+              <select v-model="groupeActif" class="groupe-actif-select">
+                <option value="">Commun (sans groupe)</option>
+                <template v-for="s in sections" :key="s.nom">
+                  <option v-if="s.nom" :value="s.nom">{{ s.nom }}</option>
+                </template>
+              </select>
+              <button @click="ajouterGroupe">＋ Nouveau groupe</button>
+            </div>
           </div>
         </div>
       </div>
@@ -430,7 +578,8 @@ const exporterPDF = async () => {
           <div class="a4-doc-infos">
             <div><span class="a4-info-lbl">Facture N° :</span> {{ numeroFacture }}</div>
             <div><span class="a4-info-lbl">Date :</span> {{ dateFacture }}</div>
-            <div><span class="a4-info-lbl">Échéance :</span> à {{ delaiPaiement }} jours</div>
+            <div v-if="delaiPaiement === 'magasin'"><span class="a4-info-lbl">Règlement :</span> en magasin</div>
+            <div v-else><span class="a4-info-lbl">Échéance :</span> à {{ delaiPaiement }} jours</div>
           </div>
         </div>
       </div>
@@ -465,48 +614,90 @@ const exporterPDF = async () => {
       <div v-if="titreProjet" class="a4-project-title">{{ titreProjet }}</div>
 
       <!-- Bouton ajout ligne (no-print) -->
-      <div class="no-print" v-if="!modeApercu" style="margin-bottom:0.5rem;">
-        <button @click="ajouterLigne('', 0)" class="btn-secondary" style="font-size:0.82rem;">＋ Ajouter une ligne</button>
+      <div class="no-print" v-if="!modeApercu" style="margin-bottom:0.5rem;display:flex;gap:0.5rem;">
+        <button @click="ajouterLigne()" class="btn-secondary" style="font-size:0.82rem;">＋ Ajouter une ligne</button>
+        <button @click="ajouterGroupe" class="btn-secondary" style="font-size:0.82rem;">＋ Ajouter un groupe (ex : Alliance Marie)</button>
       </div>
 
-      <!-- Tableau articles -->
-      <table class="a4-table">
-        <thead>
-          <tr>
-            <th>Description</th>
-            <th style="width:70px;text-align:center;">Qté</th>
-            <th style="width:130px;text-align:right;">P.U. CHF</th>
-            <th style="width:130px;text-align:right;">Total CHF</th>
-            <th style="width:32px;" class="no-print" v-if="!modeApercu"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(art, index) in factureArticles" :key="index">
-            <td>
-              <span v-if="modeApercu">{{ art.description }}</span>
-              <input v-else v-model="art.description" type="text" class="table-input" />
-            </td>
-            <td style="text-align:center;">
-              <span v-if="modeApercu">{{ art.quantite }}</span>
-              <input v-else v-model.number="art.quantite" type="number" class="table-input" style="text-align:center;" />
-            </td>
-            <td style="text-align:right;">
-              <span v-if="modeApercu">{{ Number(art.prixUnitaire).toFixed(2) }}</span>
-              <input v-else v-model.number="art.prixUnitaire" type="number" step="0.01" class="table-input" style="text-align:right;" />
-            </td>
-            <td style="text-align:right;font-weight:600;">{{ (art.quantite * art.prixUnitaire).toFixed(2) }}</td>
-            <td class="no-print" v-if="!modeApercu">
-              <button @click="supprimerArticle(index)" class="btn-danger-xs">✕</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <!-- Sections d'articles (une section = un groupe nommé, ou une seule section "commune") -->
+      <div v-for="(section, sIndex) in sections" :key="sIndex" class="groupe-bloc">
+        <div v-if="modeGroupe" class="groupe-header">
+          <template v-if="!modeApercu">
+            <input class="groupe-nom-input no-print" :value="section.nom" @input="renommerGroupe(section.nom, $event.target.value)" placeholder="Nom du groupe (ex: Alliance Marie)" />
+            <div class="groupe-header-actions no-print">
+              <button @click="ajouterLigneDansGroupe(section.nom)" class="btn-secondary btn-xs">＋ Ligne</button>
+              <button @click="supprimerGroupe(section.nom)" class="btn-danger-xs" title="Supprimer ce groupe">✕</button>
+            </div>
+          </template>
+          <div v-else class="groupe-titre-apercu">{{ section.nom || 'Commun' }}</div>
+        </div>
+
+        <table class="a4-table">
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th style="width:70px;text-align:center;">Qté</th>
+              <th style="width:130px;text-align:right;">P.U. CHF</th>
+              <th style="width:130px;text-align:right;">Total CHF</th>
+              <th style="width:32px;" class="no-print" v-if="!modeApercu"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in section.items" :key="item.index">
+              <td>
+                <span v-if="modeApercu" class="description-texte">{{ item.art.description }}</span>
+                <textarea v-else v-model="item.art.description" rows="1" class="table-input table-textarea"></textarea>
+              </td>
+              <td style="text-align:center;">
+                <span v-if="modeApercu">{{ item.art.quantite }}</span>
+                <input v-else v-model.number="item.art.quantite" type="number" class="table-input" style="text-align:center;" />
+              </td>
+              <td style="text-align:right;">
+                <span v-if="modeApercu">{{ Number(item.art.prixUnitaire).toFixed(2) }}</span>
+                <input v-else v-model.number="item.art.prixUnitaire" type="number" step="0.01" class="table-input" style="text-align:right;" />
+              </td>
+              <td style="text-align:right;font-weight:600;">{{ (item.art.quantite * item.art.prixUnitaire).toFixed(2) }}</td>
+              <td class="no-print" v-if="!modeApercu">
+                <button @click="supprimerArticle(item.index)" class="btn-danger-xs">✕</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div v-if="modeGroupe && !modeApercu" class="groupe-remise-ctrl no-print">
+          <label class="adj-toggle" style="min-width:auto;">
+            <input type="checkbox" v-model="assurerRemiseGroupe(section.nom).active" />
+            <span>Remise sur ce groupe</span>
+          </label>
+          <template v-if="remiseDeGroupe(section.nom).active">
+            <div class="adj-mode-toggle">
+              <button type="button" :class="['adj-mode-btn', remiseDeGroupe(section.nom).mode === 'pourcent' ? 'active' : '']" @click="assurerRemiseGroupe(section.nom).mode = 'pourcent'">%</button>
+              <button type="button" :class="['adj-mode-btn', remiseDeGroupe(section.nom).mode === 'fixe' ? 'active' : '']" @click="assurerRemiseGroupe(section.nom).mode = 'fixe'">CHF</button>
+            </div>
+            <input v-model.number="assurerRemiseGroupe(section.nom).valeur" type="number" step="0.5" min="0" class="adj-input" />
+            <span class="adj-unit">{{ remiseDeGroupe(section.nom).mode === 'pourcent' ? '%' : 'CHF' }}</span>
+          </template>
+        </div>
+
+        <div v-if="modeGroupe" class="groupe-total-box">
+          <div class="a4-total-row" v-if="tvaIncluse"><span class="a4-total-lbl">dont TVA {{ tvaTaux }}%</span><span class="a4-total-val">{{ section.tva.toFixed(2) }} CHF</span></div>
+          <template v-else>
+            <div class="a4-total-row"><span class="a4-total-lbl">Total HT</span><span class="a4-total-val">{{ section.ht.toFixed(2) }} CHF</span></div>
+            <div class="a4-total-row"><span class="a4-total-lbl">TVA {{ tvaTaux }}%</span><span class="a4-total-val">{{ section.tva.toFixed(2) }} CHF</span></div>
+          </template>
+          <div v-if="section.remiseMontant > 0" class="a4-total-row a4-total-discount">
+            <span class="a4-total-lbl">Remise{{ remiseDeGroupe(section.nom).mode === 'pourcent' ? ' ' + remiseDeGroupe(section.nom).valeur + '%' : '' }}</span>
+            <span class="a4-total-val">−{{ section.remiseMontant.toFixed(2) }} CHF</span>
+          </div>
+          <div class="groupe-total-ttc"><span>Total</span><span>{{ section.ttc.toFixed(2) }} CHF</span></div>
+        </div>
+      </div>
 
       <!-- Ajustements (no-print) -->
       <div class="adjustments-panel no-print" v-if="!modeApercu">
         <span class="adj-title">Ajustements</span>
         <div class="adj-row">
-          <label class="adj-toggle"><input type="checkbox" v-model="remise.active" /><span>Remise</span></label>
+          <label class="adj-toggle"><input type="checkbox" v-model="remise.active" /><span>{{ modeGroupe ? 'Remise globale' : 'Remise' }}</span></label>
           <template v-if="remise.active">
             <div class="adj-mode-toggle">
               <button :class="['adj-mode-btn', remise.mode === 'pourcent' ? 'active' : '']" @click="remise.mode = 'pourcent'">%</button>
@@ -569,7 +760,7 @@ const exporterPDF = async () => {
 
       <!-- Footer document -->
       <div class="a4-footer">
-        <div class="a4-footer-col" v-if="boutique.iban">
+        <div class="a4-footer-col" v-if="boutique.iban && delaiPaiement !== 'magasin'">
           <div class="a4-footer-lbl">Règlement :</div>
           <div class="a4-footer-sub">Par virement bancaire :</div>
           <div class="a4-footer-info" v-if="boutique.banque">Banque : {{ boutique.banque }}</div>
@@ -578,12 +769,74 @@ const exporterPDF = async () => {
         </div>
         <div class="a4-footer-col">
           <div class="a4-footer-lbl">Conditions de paiement</div>
-          <div class="a4-footer-info">Payable à {{ delaiPaiement }} jours dès réception de la présente facture.</div>
-          <div class="a4-footer-info" v-if="boutique.conditions" style="margin-top:0.4rem;">{{ boutique.conditions }}</div>
+          <div class="a4-footer-info" v-if="delaiPaiement === 'magasin'">Payable directement en magasin (espèces ou carte).</div>
+          <div class="a4-footer-info" v-else>Payable à {{ delaiPaiement }} jours dès réception de la présente facture.</div>
         </div>
       </div>
 
     </div>
+
+    <!-- QR Bill — visible uniquement à l'impression -->
+    <div v-if="qrPrintDataUrl" class="qr-bill-print-wrapper">
+      <div class="qr-bill-cut-line">✂</div>
+      <div class="qr-bill-body">
+        <!-- Récépissé (gauche 62mm) -->
+        <div class="qr-receipt">
+          <div class="qr-section-title">Récépissé</div>
+          <div class="qr-lbl">Compte / Payable à</div>
+          <div class="qr-val">{{ boutique.iban }}</div>
+          <div class="qr-val">{{ boutique.nom }}</div>
+          <div class="qr-val">{{ boutique.adresse }}</div>
+          <div class="qr-val">{{ boutique.localite }}</div>
+          <template v-if="clientSelectionne">
+            <div class="qr-lbl" style="margin-top:3mm;">Payable par</div>
+            <div class="qr-val">{{ nomCompletClient(clientSelectionne) }}</div>
+            <div class="qr-val">{{ adresseLigne1(clientSelectionne) }}</div>
+            <div class="qr-val">{{ adresseLigne2(clientSelectionne) }}</div>
+          </template>
+          <div class="qr-currency-row">
+            <div><div class="qr-lbl">Monnaie</div><div class="qr-val">CHF</div></div>
+            <div><div class="qr-lbl">Montant</div><div class="qr-val">{{ solde.toFixed(2) }}</div></div>
+          </div>
+          <div class="qr-depot">Point de dépôt</div>
+        </div>
+        <!-- Séparateur vertical -->
+        <div class="qr-vert-line"></div>
+        <!-- Section paiement (droite) -->
+        <div class="qr-payment">
+          <div class="qr-section-title">Section paiement</div>
+          <div class="qr-payment-top">
+            <img :src="qrPrintDataUrl" class="qr-code-img" />
+            <div>
+              <div class="qr-currency-row">
+                <div><div class="qr-lbl">Monnaie</div><div class="qr-val">CHF</div></div>
+                <div><div class="qr-lbl">Montant</div><div class="qr-val">{{ solde.toFixed(2) }}</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="qr-payment-info">
+            <div>
+              <div class="qr-lbl">Compte / Payable à</div>
+              <div class="qr-val">{{ boutique.iban }}</div>
+              <div class="qr-val">{{ boutique.nom }}</div>
+              <div class="qr-val">{{ boutique.adresse }}</div>
+              <div class="qr-val">{{ boutique.localite }}</div>
+            </div>
+            <div>
+              <div class="qr-lbl">Référence</div>
+              <div class="qr-val">{{ numeroFacture }}</div>
+              <template v-if="clientSelectionne">
+                <div class="qr-lbl" style="margin-top:3mm;">Payable par</div>
+                <div class="qr-val">{{ nomCompletClient(clientSelectionne) }}</div>
+                <div class="qr-val">{{ adresseLigne1(clientSelectionne) }}</div>
+                <div class="qr-val">{{ adresseLigne2(clientSelectionne) }}</div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -591,39 +844,52 @@ const exporterPDF = async () => {
 .field-lbl { font-size: 0.82rem; font-weight: 600; color: #7a5c30; display: block; margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.4px; }
 
 /* ── A4 Document ─────────────────────────────── */
-.a4-page { background: #FFFFFF; padding: 2.5rem 3rem; font-size: 13px; color: #0f172a; line-height: 1.5; }
-.a4-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; }
+.a4-page { background: #FFFFFF; width: 210mm; min-height: 297mm; margin: 0 auto; box-sizing: border-box; padding: 11mm 15mm; font-size: 11.5px; color: #0f172a; line-height: 1.32; }
+.a4-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.3rem; }
 .a4-logo-zone { flex: 0 0 auto; max-width: 45%; }
-.a4-enseigne { font-size: 1.1rem; font-weight: 800; letter-spacing: -0.2px; }
+.a4-enseigne { font-size: 1.3rem; font-weight: 800; letter-spacing: -0.2px; }
 .a4-title-zone { text-align: right; }
-.a4-doc-type { font-size: 3.8rem; font-weight: 900; letter-spacing: 6px; line-height: 1; margin-bottom: 0.75rem; color: #0f172a; }
-.a4-doc-infos { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; line-height: 2; }
+.a4-doc-type { font-size: 3.4rem; font-weight: 900; letter-spacing: 6px; line-height: 1; margin-bottom: 0.6rem; color: #0f172a; }
+.a4-doc-infos { font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; line-height: 1.8; }
 .a4-info-lbl { color: #64748b; }
-.a4-hr { border: none; border-top: 1.5px solid #0f172a; margin: 0 0 1.5rem; }
-.a4-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; margin-bottom: 2rem; }
-.a4-section-lbl { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.5rem; }
-.a4-party-info { font-size: 0.82rem; line-height: 1.75; color: #334155; }
-.a4-party-name { font-weight: 700; color: #0f172a; }
-.a4-table { width: 100%; border-collapse: collapse; margin-bottom: 0.25rem; }
-.a4-table th { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; padding: 0.6rem 0.4rem 0.6rem 0; border-bottom: 1.5px solid #0f172a; text-align: left; }
-.a4-table td { padding: 0.7rem 0.4rem 0.7rem 0; border-bottom: 1px solid #e0d5c5; font-size: 0.86rem; vertical-align: middle; }
+.a4-hr { border: none; border-top: 1.5px solid #0f172a; margin: 0 0 1.1rem; }
+.a4-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; margin-bottom: 1.3rem; }
+.a4-section-lbl { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.9px; margin-bottom: 0.4rem; }
+.a4-party-info { font-size: 0.84rem; line-height: 1.5; color: #334155; }
+.a4-party-name { font-weight: 700; color: #0f172a; font-size: 0.92rem; }
+.a4-table { width: 100%; border-collapse: collapse; margin-bottom: 0.3rem; }
+.a4-table th { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; padding: 0.5rem 0.5rem 0.5rem 0; border-bottom: 1.5px solid #0f172a; text-align: left; }
+.a4-table td { padding: 0.55rem 0.5rem 0.55rem 0; border-bottom: 1px solid #e0d5c5; font-size: 0.86rem; vertical-align: middle; }
 .a4-table tbody tr:last-child td { border-bottom: none; }
-.a4-totals { display: flex; flex-direction: column; align-items: flex-end; margin-top: 1rem; margin-bottom: 2rem; gap: 0.2rem; }
-.a4-total-row { display: flex; width: 280px; justify-content: space-between; font-size: 0.82rem; padding: 0.15rem 0; }
+.a4-table tr, .groupe-bloc, .a4-totals, .a4-footer { break-inside: avoid; page-break-inside: avoid; }
+.groupe-actif-select { padding: 0.32rem 0.55rem; border: 1px solid #d4c9b8; border-radius: 6px; font-size: 0.84rem; background: #fff; color: #3d2a14; }
+.groupe-bloc { margin-bottom: 1rem; }
+.groupe-bloc:last-of-type { margin-bottom: 0; }
+.groupe-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.35rem; }
+.groupe-nom-input { flex: 1; font-size: 0.98rem; font-weight: 700; color: #0f172a; border: 1px dashed #d4c9b8; border-radius: 6px; padding: 0.4rem 0.65rem; background: #faf6ef; }
+.groupe-header-actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
+.btn-xs { font-size: 0.76rem; padding: 0.3rem 0.6rem; }
+.groupe-titre-apercu { font-size: 1rem; font-weight: 800; color: #0f172a; padding-bottom: 0.3rem; border-bottom: 1.5px solid #0f172a; }
+.groupe-remise-ctrl { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; background: #faf6ef; border: 1px dashed #d4b896; border-radius: 8px; padding: 0.5rem 0.75rem; margin-top: 0.35rem; font-size: 0.82rem; }
+.groupe-total-box { display: flex; flex-direction: column; align-items: flex-end; gap: 0.15rem; margin-top: 0.3rem; margin-bottom: 0.35rem; }
+.groupe-total-box .a4-total-row { width: 290px; }
+.groupe-total-ttc { display: flex; justify-content: space-between; width: 290px; font-weight: 800; font-size: 0.9rem; padding-top: 0.25rem; margin-top: 0.15rem; border-top: 1px solid #e0d5c5; }
+.a4-totals { display: flex; flex-direction: column; align-items: flex-end; margin-top: 0.9rem; margin-bottom: 1.3rem; gap: 0.2rem; }
+.a4-total-row { display: flex; width: 300px; justify-content: space-between; font-size: 0.82rem; padding: 0.15rem 0; }
 .a4-total-lbl { font-weight: 700; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px; color: #475569; }
 .a4-total-val { font-weight: 600; color: #0f172a; }
 .a4-total-discount .a4-total-lbl, .a4-total-discount .a4-total-val { color: #dc2626; }
-.a4-grand-total-row { display: flex; width: 280px; justify-content: space-between; padding: 0.4rem 0 0.15rem; border-top: 1.5px solid #0f172a; margin-top: 0.25rem; }
+.a4-grand-total-row { display: flex; width: 300px; justify-content: space-between; padding: 0.35rem 0 0.15rem; border-top: 1.5px solid #0f172a; margin-top: 0.2rem; }
 .a4-grand-lbl { font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; }
-.a4-grand-val { font-weight: 800; font-size: 0.95rem; }
-.a4-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; padding-top: 1.5rem; border-top: 1.5px solid #0f172a; font-size: 0.8rem; margin-top: auto; }
-.a4-footer-lbl { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.4rem; }
+.a4-grand-val { font-weight: 800; font-size: 1rem; }
+.a4-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; padding-top: 1rem; border-top: 1.5px solid #0f172a; font-size: 0.8rem; margin-top: auto; }
+.a4-footer-lbl { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.35rem; }
 .a4-footer-sub { font-weight: 600; font-size: 0.78rem; margin-bottom: 0.2rem; }
-.a4-footer-info { color: #475569; line-height: 1.65; }
+.a4-footer-info { color: #475569; line-height: 1.45; }
 
 .a4-project-title {
-  font-size: 1rem; font-weight: 700; color: #0f172a;
-  margin-bottom: 1.25rem; padding-bottom: 0.75rem;
+  font-size: 1.02rem; font-weight: 700; color: #0f172a;
+  margin-bottom: 0.8rem; padding-bottom: 0.45rem;
   border-bottom: 1px solid #e0d5c5;
   letter-spacing: 0.2px;
 }
@@ -633,9 +899,26 @@ const exporterPDF = async () => {
 .btn-valider:hover { background: #0369a1; transform: translateY(-1px); }
 .statut-pill { font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 20px; letter-spacing: 0.4px; white-space: nowrap; }
 .statut-brouillon { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
-.statut-valide    { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.statut-envoyee   { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.statut-valide    { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
 .statut-nouveau   { background: #faf6ef; color: #9a7a4a; border: 1px solid #e8dcc8; }
 .toast-valide { position: fixed; top: 1.2rem; right: 1.5rem; z-index: 9999; background: #0B3D2E; color: #f5efe3; padding: 0.7rem 1.4rem; border-radius: 10px; font-weight: 600; font-size: 0.9rem; box-shadow: 0 4px 20px rgba(0,0,0,0.18); pointer-events: none; }
+.pdf-export-banner {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  z-index: 10000; background: #fff; color: #0f172a;
+  border-radius: 14px; box-shadow: 0 25px 60px rgba(0,0,0,0.35);
+  padding: 1.5rem 1.75rem; display: flex; align-items: center; gap: 1.25rem;
+  min-width: 440px; max-width: 90vw; border: 1px solid #e0d5c5;
+}
+.pdf-export-icon { width: 44px; height: 44px; border-radius: 50%; background: #16a34a; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 1.3rem; font-weight: 800; flex-shrink: 0; }
+.pdf-export-text { flex: 1; min-width: 0; }
+.pdf-export-title { font-weight: 800; font-size: 1.05rem; color: #0f172a; }
+.pdf-export-sub { font-size: 0.78rem; color: #8a7055; margin-top: 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-export-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+.pdf-export-close { background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 1.1rem; padding: 0.3rem; line-height: 1; }
+.pdf-export-close:hover { color: #ef4444; }
+.pdf-modal-enter-active, .pdf-modal-leave-active { transition: opacity 0.2s ease; }
+.pdf-modal-enter-from, .pdf-modal-leave-to { opacity: 0; }
 .toast-enter-active, .toast-leave-active { transition: all 0.3s ease; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(-12px); }
 .btn-floating-quit { position: fixed; bottom: 20px; right: 20px; background: #0B3D2E; color: #f5efe3; border: 1px solid rgba(197,160,89,0.2); box-shadow: 0 10px 25px rgba(0,0,0,0.2); padding: 0.75rem 1.25rem; font-weight: 600; z-index: 999; border-radius: 7px; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
@@ -667,4 +950,61 @@ const exporterPDF = async () => {
 .pdf-bw .a4-hr { border-top-color: #000 !important; }
 .pdf-bw .a4-grand-total-row { border-top-color: #000 !important; }
 .pdf-bw .a4-footer { border-top-color: #000 !important; }
+
+/* ── QR Bill print page ─────────────────────── */
+.qr-bill-print-wrapper { display: none; }
+@media print {
+  .qr-bill-print-wrapper {
+    display: flex !important;
+    flex-direction: column;
+    justify-content: flex-end;
+    height: 297mm;
+    box-sizing: border-box;
+    overflow: hidden;
+    page-break-before: always;
+    page-break-inside: avoid;
+    font-family: Arial, sans-serif;
+  }
+  .qr-bill-cut-line {
+    font-size: 9pt;
+    color: #aaa;
+    border-top: 1px dashed #aaa;
+    padding-top: 1mm;
+    margin-bottom: 2mm;
+    line-height: 1;
+  }
+  .qr-bill-body {
+    display: flex;
+    height: 100mm;
+    border: 0.5pt solid #ccc;
+  }
+  .qr-receipt {
+    width: 62mm;
+    padding: 3mm 4mm;
+    border-right: 1px dashed #aaa;
+    display: flex;
+    flex-direction: column;
+    font-size: 8pt;
+    overflow: hidden;
+    box-sizing: border-box;
+  }
+  .qr-vert-line { display: none; }
+  .qr-payment {
+    flex: 1;
+    padding: 3mm 4mm;
+    font-size: 8pt;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+  }
+  .qr-section-title { font-size: 11pt; font-weight: bold; margin-bottom: 3mm; }
+  .qr-lbl { font-size: 6pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.3pt; margin-top: 2mm; margin-bottom: 0.5mm; }
+  .qr-val { font-size: 8pt; line-height: 1.3; }
+  .qr-currency-row { display: flex; gap: 5mm; margin-top: auto; margin-bottom: 2mm; }
+  .qr-depot { font-size: 6pt; font-weight: bold; text-align: right; margin-top: auto; }
+  .qr-payment-top { display: flex; align-items: flex-end; gap: 4mm; margin-bottom: 3mm; }
+  .qr-code-img { width: 46mm; height: 46mm; }
+  .qr-payment-info { display: flex; gap: 5mm; flex: 1; }
+}
 </style>

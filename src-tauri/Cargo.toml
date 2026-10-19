@@ -24,3 +24,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-fs = "2.0"
 tauri-plugin-dialog = "2.0"
+tauri-plugin-http = { version = "2", default-features = false, features = ["charset", "cookies", "macos-system-configuration", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+hickory-resolver = "0.24"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

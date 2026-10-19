@@ -1,9 +1,14 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
+import { wooFetch as fetch } from '../composables/wooHttp'
 import { useWooOrders, formatDate, formatCHF, periodToDates } from '../composables/useWooOrders'
 
-const props = defineProps({ wooConfig: Object })
-const emit = defineEmits(['update:wooConfig'])
+const props = defineProps({
+  wooConfig: Object,
+  produitsCache: { type: Array, default: () => [] },
+  produitsTimestamp: { type: String, default: null },
+})
+const emit = defineEmits(['update:wooConfig', 'update:produitsCache', 'update:produitsTimestamp'])
 
 // ── Config locale ─────────────────────────────────────────────────────────
 const configLocale = ref({
@@ -11,7 +16,8 @@ const configLocale = ref({
   consumerKey:    props.wooConfig?.consumerKey    || '',
   consumerSecret: props.wooConfig?.consumerSecret || '',
 })
-// Auto-save après 800ms sans frappe (pas de boucle car debounce + v-if recrée le composant)
+
+// Auto-save après 800ms sans frappe
 let autoSaveTimer = null
 watch(configLocale, (v) => {
   clearTimeout(autoSaveTimer)
@@ -41,7 +47,11 @@ const safeFetch = async (url, opts = {}) => {
   return res
 }
 
-const authHdr = () => ({ Authorization: `Basic ${btoa(`${configLocale.value.consumerKey}:${configLocale.value.consumerSecret}`)}` })
+const authHdr = () => ({
+  Authorization: `Basic ${btoa(`${configLocale.value.consumerKey}:${configLocale.value.consumerSecret}`)}`,
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Colayco-App/1.0',
+  'Accept': 'application/json',
+})
 const apiUrl  = (ep) => configLocale.value.url.replace(/\/$/, '') + '/wp-json/wc/v3/' + ep
 
 // ── Test connexion ────────────────────────────────────────────────────────
@@ -119,7 +129,7 @@ const lineItemsHT = (o) => o.line_items.reduce((s, i) => s + Number(i.total), 0)
 const invLoad  = ref(false)
 const invErr   = ref('')
 const invMsg   = ref('')
-const produits = ref([])
+const produits = ref(props.produitsCache.length ? [...props.produitsCache] : [])
 const filtreCategorie  = ref('')
 const filtreRecherche  = ref('')
 const miseAJourEnCours = ref({})
@@ -144,6 +154,9 @@ const chargerProduits = async () => {
       produits.value.push(...data)
       page++
     }
+    const ts = new Date().toLocaleString('fr-CH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    emit('update:produitsCache', [...produits.value])
+    emit('update:produitsTimestamp', ts)
     onglet.value = 'inventaire'
     invMsg.value = `${produits.value.length} produit(s) chargé(s).`
     setTimeout(() => { invMsg.value = '' }, 3000)
@@ -397,6 +410,10 @@ onMounted(() => {
     <div v-if="onglet === 'inventaire'">
       <div v-if="invErr"  class="alerte-erreur">⚠ {{ invErr }}</div>
       <div v-if="invMsg"  class="alerte-succes">✓ {{ invMsg }}</div>
+      <div v-if="produitsTimestamp && produits.length > 0" class="cache-info">
+        Données en cache · dernière mise à jour : {{ produitsTimestamp }}
+        <button class="btn-refresh-xs" @click="chargerProduits" :disabled="invLoad">↻ Actualiser</button>
+      </div>
 
       <div v-if="produits.length === 0" class="vide-msg">
         <div class="vide-icon">📦</div>
@@ -673,8 +690,8 @@ onMounted(() => {
 
           <div class="receipt-header">
             <div class="receipt-shop">COLAYCO BIJOUX</div>
-            <div class="receipt-sub">Rue du Seyon 4 · 2000 Neuchâtel · colayco.ch</div>
-            <div class="receipt-sub">CHE-000.000.000 TVA</div>
+            <div class="receipt-sub">Bahnhofstrasse 1 - 3236 Gampelen - www.colayco.ch</div>
+            <div class="receipt-sub">CHE-396.831.481 TVA</div>
           </div>
           <div class="divider" />
 
@@ -883,6 +900,9 @@ onMounted(() => {
 .info-note { background:#fef9ec;border:1px solid #fde68a;border-radius:8px;padding:.75rem 1rem;font-size:.83rem;color:#78350f;line-height:1.6; }
 
 /* ── Vide ─────────────────────────────────────────────────────────────────── */
+.cache-info { display:flex;align-items:center;gap:.75rem;font-size:.78rem;color:#9a8870;padding:.45rem .75rem;background:#faf6ef;border:1px solid #e8dcc8;border-radius:8px;margin-bottom:.75rem; }
+.btn-refresh-xs { padding:2px 10px;border:1px solid #d4c89a;border-radius:6px;background:#fff;cursor:pointer;font-size:.76rem;color:#0B3D2E;font-weight:600; }
+.btn-refresh-xs:hover { background:#faf6ef;border-color:#C5A059; }
 .vide-msg { text-align:center;padding:4rem 2rem;color:#9a8870;display:flex;flex-direction:column;align-items:center;gap:1rem; }
 .vide-icon { font-size:3rem; }
 .vide-msg p { font-size:.95rem;margin:0; }

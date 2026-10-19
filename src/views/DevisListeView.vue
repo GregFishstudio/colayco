@@ -1,10 +1,11 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
 import { save } from '@tauri-apps/plugin-dialog'
 import { writeFile, mkdir } from '@tauri-apps/plugin-fs'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { openPath } from '@tauri-apps/plugin-opener'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
+import { trouverPointsDeCoupeSurs, trouverHautsDesBlocs, paginerCanvas, extraireBandeCanvas } from '../composables/pdfPagination'
 
 const props = defineProps({
   devisListe: Array,
@@ -47,6 +48,39 @@ const htFromDevis = (devis) => {
   return m === 'incluse' ? (devis.totalTTC ?? 0) - tvaFromDevis(devis) : devis.totalTTC ?? 0
 }
 
+const sectionsDeDevis = (devis) => {
+  const arts = devis.articles || []
+  const noms = []
+  for (const a of arts) {
+    const nom = a.groupe || ''
+    if (!noms.includes(nom)) noms.push(nom)
+  }
+  const rate = props.config?.tvaTaux ?? 8.1
+  const incluse = (props.config?.tvaMode ?? 'incluse') === 'incluse'
+  const remisesGroupes = devis.remisesGroupes || {}
+  const optionsGroupes = devis.optionsGroupes || {}
+  const calc = (nom, list) => {
+    const ht = list.reduce((s, a) => s + a.quantite * a.prixUnitaire, 0)
+    const tva = incluse ? ht * rate / (100 + rate) : ht * rate / 100
+    const ttcBrut = incluse ? ht : ht + tva
+    const r = remisesGroupes[nom] || { active: false, mode: 'pourcent', valeur: 0 }
+    let remiseMontant = 0
+    if (r.active && r.valeur) {
+      const v = r.mode === 'pourcent' ? ttcBrut * r.valeur / 100 : r.valeur
+      remiseMontant = Math.round(Math.min(v, ttcBrut) * 100) / 100
+    }
+    return { ht, tva, ttcBrut, remiseMontant, remise: r, ttc: Math.max(0, ttcBrut - remiseMontant) }
+  }
+  return noms.map(nom => {
+    const items = arts.filter(a => (a.groupe || '') === nom)
+    return { nom, items, exclu: !!optionsGroupes[nom], ...calc(nom, items) }
+  })
+}
+const modeGroupeDevis = (devis) => {
+  const s = sectionsDeDevis(devis)
+  return s.length > 1 || (s.length === 1 && s[0].nom !== '')
+}
+
 const ouvrirApercu = (devis) => { devisApercu.value = devis }
 const fermerApercu = () => { devisApercu.value = null }
 
@@ -64,20 +98,16 @@ const dupliquerDevis = (devis) => {
   emit('charger-devis', copie)
 }
 
-let _printGuard = false
-let _unlistenClose = null
-onMounted(async () => {
-  try {
-    _unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
-      if (_printGuard) event.preventDefault()
-    })
-  } catch (_) {}
-})
-onUnmounted(() => { if (_unlistenClose) _unlistenClose() })
-
 const imprimerApercu = async () => {
-  _printGuard = true
-  window.addEventListener('afterprint', () => { _printGuard = false }, { once: true })
+  window.print()
+}
+
+const imprimerDirectement = async (devis) => {
+  devisApercu.value = devis
+  await new Promise(r => setTimeout(r, 300))
+  window.addEventListener('afterprint', () => {
+    devisApercu.value = null
+  }, { once: true })
   window.print()
 }
 
@@ -119,23 +149,27 @@ const exporterPDF = async (devis) => {
     element.classList.add('pdf-bw')
     await new Promise(r => setTimeout(r, 50))
 
-    const canvas = await html2canvas(element, { scale: 2, useCORS: true, allowTaint: true, logging: false, height: element.scrollHeight, windowHeight: element.scrollHeight, scrollY: 0 })
+    const scaleCapture = 2
+    const pointsDeCoupe = trouverPointsDeCoupeSurs(element, scaleCapture)
+    const sautsPageGroupes = devis.sautsPageGroupes || {}
+    const hautsGroupes = trouverHautsDesBlocs(element, scaleCapture, '.groupe-bloc')
+    const sautsPageForces = sectionsDeDevis(devis)
+      .map((s, i) => (i > 0 && sautsPageGroupes[s.nom]) ? hautsGroupes[i] : null)
+      .filter(v => v !== null && v !== undefined)
+    const canvas = await html2canvas(element, { scale: scaleCapture, useCORS: true, allowTaint: true, logging: false, height: element.scrollHeight, windowHeight: element.scrollHeight, scrollY: 0 })
     element.classList.remove('pdf-bw')
 
-    const imgData = canvas.toDataURL('image/png')
     const pdf = new jsPDF('p', 'mm', 'a4')
-    const pageW = 210, pageH = 297
-    const imgH = (canvas.height * pageW) / canvas.width
-
-    pdf.addImage(imgData, 'PNG', 0, 0, pageW, imgH)
-    let remaining = imgH - pageH, yOffset = -pageH
-    while (remaining > 0) {
-      pdf.addPage(); pdf.addImage(imgData, 'PNG', 0, yOffset, pageW, imgH)
-      yOffset -= pageH; remaining -= pageH
-    }
+    const pages = paginerCanvas(canvas, pointsDeCoupe, { margeHautMm: 13, sautsPageForces })
+    const pxParMm = canvas.width / 210
+    pages.forEach((p, i) => {
+      if (i > 0) pdf.addPage()
+      const dataUrl = extraireBandeCanvas(canvas, p.from, p.to)
+      pdf.addImage(dataUrl, 'PNG', 0, p.margeHaut, 210, (p.to - p.from) / pxParMm)
+    })
 
     await writeFile(cheminFichier, new Uint8Array(pdf.output('arraybuffer')))
-    alert(`PDF exporté !\n${cheminFichier}`)
+    try { await openPath(cheminFichier) } catch (_) {}
   } catch (err) {
     console.error('Erreur export PDF:', err)
     alert('Erreur lors de la génération du PDF.')
@@ -162,7 +196,7 @@ const exporterPDF = async (devis) => {
           <button v-if="recherche" @click="recherche = ''" class="search-clear">✕</button>
         </div>
         <div class="filtre-chips">
-          <button v-for="f in ['Tous','Validé','Brouillon']" :key="f" :class="['chip', filtreStatut === f ? 'chip-active' : '']" @click="filtreStatut = f">{{ f }}</button>
+          <button v-for="f in ['Tous','Brouillon','Envoyée','Validée']" :key="f" :class="['chip', filtreStatut === f ? 'chip-active' : '']" @click="filtreStatut = f">{{ f }}</button>
         </div>
       </div>
 
@@ -189,7 +223,7 @@ const exporterPDF = async (devis) => {
           <tr v-for="(devis, index) in devisFiltres" :key="devis.numero">
             <td class="numero-cell">
               <span class="badge-number">{{ devis.numero }}</span>
-              <span :class="['badge-statut', devis.statut === 'Validé' ? 'badge-valide' : 'badge-brouillon']">{{ devis.statut || 'Brouillon' }}</span>
+              <span :class="['badge-statut', devis.statut === 'Validée' ? 'badge-valide' : devis.statut === 'Envoyée' ? 'badge-envoyee' : 'badge-brouillon']">{{ devis.statut || 'Brouillon' }}</span>
             </td>
             <td class="date-cell">{{ devis.date }}</td>
             <td class="client-name">{{ nomCompletClient(devis.client) || '—' }}</td>
@@ -201,6 +235,11 @@ const exporterPDF = async (devis) => {
               <button @click="emit('charger-devis', devis)" class="btn-icon" title="Éditer">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </button>
+              <!-- TODO: bouton Imprimer action rapide
+              <button @click="imprimerDirectement(devis)" class="btn-icon" title="Imprimer">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              </button>
+              -->
               <button @click="dupliquerDevis(devis)" class="btn-icon" title="Dupliquer">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               </button>
@@ -286,24 +325,51 @@ const exporterPDF = async (devis) => {
 
               <div v-if="devisApercu.titreProjet" class="doc-project-title">{{ devisApercu.titreProjet }}</div>
 
-              <table class="invoice-table" style="margin-top:1.5rem;">
-                <thead>
-                  <tr>
-                    <th>Description</th>
-                    <th width="80" class="text-center">Qté</th>
-                    <th width="130" class="text-right">P.U. CHF</th>
-                    <th width="130" class="text-right">Total CHF</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="art in devisApercu.articles" :key="art.description + art.prixUnitaire">
-                    <td>{{ art.description }}</td>
-                    <td class="text-center">{{ art.quantite }}</td>
-                    <td class="text-right">{{ Number(art.prixUnitaire).toFixed(2) }}</td>
-                    <td class="text-right bold-text">{{ (art.quantite * art.prixUnitaire).toFixed(2) }}</td>
-                  </tr>
-                </tbody>
-              </table>
+              <div
+                v-for="(section, sIndex) in sectionsDeDevis(devisApercu)" :key="section.nom" class="groupe-bloc"
+                :style="sIndex > 0 && (devisApercu.sautsPageGroupes || {})[section.nom] ? { breakBefore: 'page', pageBreakBefore: 'always' } : {}"
+              >
+                <div v-if="modeGroupeDevis(devisApercu) && section.nom" class="groupe-titre-apercu">
+                  {{ section.nom }}
+                  <span v-if="section.exclu" class="groupe-option-badge">Option — non incluse dans le total</span>
+                </div>
+                <div v-else-if="modeGroupeDevis(devisApercu)" class="groupe-titre-apercu">Commun</div>
+
+                <table class="invoice-table" style="margin-top:1rem;">
+                  <thead>
+                    <tr>
+                      <th>Description</th>
+                      <th width="80" class="text-center">Qté</th>
+                      <th width="130" class="text-right">P.U. CHF</th>
+                      <th width="130" class="text-right">Total CHF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="art in section.items" :key="art.description + art.prixUnitaire">
+                      <td style="white-space:pre-line;">{{ art.description }}</td>
+                      <td class="text-center">{{ art.quantite }}</td>
+                      <td class="text-right">{{ Number(art.prixUnitaire).toFixed(2) }}</td>
+                      <td class="text-right bold-text">{{ (art.quantite * art.prixUnitaire).toFixed(2) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <div v-if="modeGroupeDevis(devisApercu)" class="groupe-total-box">
+                  <template v-if="(config?.tvaMode ?? 'incluse') === 'incluse'">
+                    <div class="groupe-total-row"><span>dont TVA {{ config?.tvaTaux ?? 8.1 }}%</span><span>{{ section.tva.toFixed(2) }} CHF</span></div>
+                  </template>
+                  <template v-else>
+                    <div class="groupe-total-row"><span>Total HT</span><span>{{ section.ht.toFixed(2) }} CHF</span></div>
+                    <div class="groupe-total-row"><span>TVA {{ config?.tvaTaux ?? 8.1 }}%</span><span>{{ section.tva.toFixed(2) }} CHF</span></div>
+                  </template>
+                  <div v-if="section.remiseMontant > 0" class="groupe-total-row" style="color:#dc2626;">
+                    <span>Remise{{ section.remise.mode === 'pourcent' ? ' ' + section.remise.valeur + '%' : '' }}</span>
+                    <span>−{{ section.remiseMontant.toFixed(2) }} CHF</span>
+                  </div>
+                  <div class="groupe-total-ttc"><span>Total{{ section.exclu ? ' (option)' : '' }}</span><span>{{ section.ttc.toFixed(2) }} CHF</span></div>
+                  <div v-if="section.exclu" class="groupe-option-note">Non inclus dans le total général</div>
+                </div>
+              </div>
 
               <div class="apercu-footer" style="margin-top:2.5rem;">
                 <div class="apercu-legal">
@@ -318,7 +384,7 @@ const exporterPDF = async (devis) => {
                     <span class="legal-label">N° d'entreprise :</span> {{ boutique.tvaNumero }}
                   </div>
                 </div>
-                <div class="apercu-totals">
+                <div v-if="devisApercu.afficherTotalGeneral !== false" class="apercu-totals">
                   <template v-if="(config?.tvaMode ?? 'incluse') === 'incluse'">
                     <span class="totals-label">dont TVA {{ config?.tvaTaux ?? 8.1 }}% incluse</span>
                     <span class="totals-value">{{ tvaFromDevis(devisApercu).toFixed(2) }} CHF</span>
@@ -375,6 +441,7 @@ const exporterPDF = async (devis) => {
 .numero-cell { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
 .badge-statut { font-size: 0.63rem; font-weight: 700; padding: 0.15rem 0.55rem; border-radius: 20px; letter-spacing: 0.3px; white-space: nowrap; }
 .badge-brouillon { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+.badge-envoyee   { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
 .badge-valide    { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
 
 /* ── Modal ───────────────────────────── */
@@ -407,6 +474,16 @@ const exporterPDF = async (devis) => {
 .grand-total { font-size: 1.05rem; font-weight: 800; color: #0f172a; border-top: 2px solid #0f172a; padding-top: 0.5rem; margin-top: 0.15rem; }
 
 .doc-project-title { font-size: 0.95rem; font-weight: 700; color: #0f172a; margin: 1rem 0 0.75rem; padding-bottom: 0.6rem; border-bottom: 1px solid #e2e8f0; }
+
+/* ── Sections par groupe (Alliance Marie / Alliance Marco / etc.) ── */
+.groupe-bloc { margin-bottom: 1.5rem; }
+.groupe-bloc:last-of-type { margin-bottom: 0; }
+.groupe-titre-apercu { font-size: 0.95rem; font-weight: 800; color: #0f172a; padding-bottom: 0.4rem; border-bottom: 1.5px solid #0f172a; }
+.groupe-option-badge { display: inline-block; font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: #b45309; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 20px; padding: 0.1rem 0.55rem; margin-left: 0.6rem; vertical-align: middle; }
+.groupe-option-note { font-size: 0.7rem; font-style: italic; color: #b45309; margin-top: 0.15rem; }
+.groupe-total-box { display: flex; flex-direction: column; align-items: flex-end; gap: 0.15rem; margin-top: 0.5rem; }
+.groupe-total-row { display: flex; justify-content: space-between; width: 220px; font-size: 0.78rem; color: #64748b; padding: 0.1rem 0; }
+.groupe-total-ttc { display: flex; justify-content: space-between; width: 220px; font-weight: 800; font-size: 0.85rem; padding-top: 0.3rem; margin-top: 0.15rem; border-top: 1px solid #e2e8f0; color: #0f172a; }
 
 /* ── Print depuis modal ──────────────── */
 @media print {

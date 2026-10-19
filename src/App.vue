@@ -10,6 +10,7 @@ import DevisListeView from './views/DevisListeView.vue'
 import FactureView from './views/FactureView.vue'
 import FactureListeView from './views/FactureListeView.vue'
 import WoocommerceView from './views/WoocommerceView.vue'
+import MargeView from './views/MargeView.vue'
 
 // L'onglet actif au démarrage
 const ongletActif = ref('devis')
@@ -80,6 +81,10 @@ const factureListe = ref([])
 const prochainNumeroFacture = ref(1)
 const derniereSauvegarde = ref(null)
 
+// Cache en mémoire (non persisté) pour WooCommerce
+const wooProduitsCache = ref([])
+const wooProduitsTimestamp = ref(null)
+
 // --- CHARGEMENT AUTOMATIQUE INITIAL ---
 onMounted(async () => {
   try {
@@ -129,12 +134,13 @@ onMounted(async () => {
       })
     }
     if (data.devisListe) {
-      // Migration : ajouter statut 'Validé' aux anciens devis sans statut
-      devisListe.value = data.devisListe.map(d => ({ ...d, statut: d.statut ?? 'Validé' }))
+      // Migration : ajouter statut aux anciens devis sans statut, et renommer l'ancien 'Validé' → 'Validée'
+      devisListe.value = data.devisListe.map(d => ({ ...d, statut: d.statut === 'Validé' ? 'Validée' : (d.statut ?? 'Validée') }))
     }
     if (data.prochainNumeroDevis) prochainNumeroDevis.value = data.prochainNumeroDevis
     if (data.factureListe) {
-      factureListe.value = data.factureListe.map(f => ({ ...f, statut: f.statut ?? 'Validé' }))
+      // Migration : ajouter statut aux anciennes factures sans statut, et renommer l'ancien 'Validé' → 'Payée'
+      factureListe.value = data.factureListe.map(f => ({ ...f, statut: f.statut === 'Validé' ? 'Payée' : (f.statut ?? 'Payée') }))
     }
     if (data.prochainNumeroFacture) prochainNumeroFacture.value = data.prochainNumeroFacture
     if (data.woocommerce) woocommerce.value = data.woocommerce
@@ -180,6 +186,10 @@ const gererMiseAJourLogo = (logoBase64) => {
 
 const incrementerNumeroDevis = () => { prochainNumeroDevis.value++ }
 const incrementerNumeroFacture = () => { prochainNumeroFacture.value++ }
+
+const gererUpdateWooConfig = (v) => { woocommerce.value = v }
+const gererUpdateWooProduitsCache = (v) => { wooProduitsCache.value = v }
+const gererUpdateWooProduitsTimestamp = (v) => { wooProduitsTimestamp.value = v }
 
 const sauvegarderManuellement = async () => {
   try {
@@ -246,6 +256,15 @@ const chargerFactureDansEditeur = (factureCopie) => {
 }
 
 const chargerDevisCommeFacture = (devis) => {
+  // S'assurer que le devis reste dans devisListe
+  const devisIdx = devisListe.value.findIndex(d => d.numero === devis.numero)
+  if (devisIdx !== -1) {
+    devisListe.value[devisIdx] = devis
+  } else {
+    devisListe.value.push(devis)
+    prochainNumeroDevis.value++
+  }
+
   const nouvelleFacture = {
     numero: `FAC-${new Date().getFullYear()}-${String(prochainNumeroFacture.value).padStart(4, '0')}`,
     date: new Date().toISOString().split('T')[0],
@@ -258,6 +277,11 @@ const chargerDevisCommeFacture = (devis) => {
     totalTTC: devis.totalTTC,
     statut: 'Brouillon'
   }
+
+  // Sauvegarder immédiatement la facture dans factureListe
+  factureListe.value.push(nouvelleFacture)
+  prochainNumeroFacture.value++
+
   ongletActif.value = 'facture'
   setTimeout(() => {
     if (factureViewRef.value) factureViewRef.value.chargerFactureExistant(nouvelleFacture)
@@ -309,6 +333,16 @@ const chargerDevisCommeFacture = (devis) => {
           Hist. Factures <span class="nav-badge">{{ factureListe.length }}</span>
         </button>
 
+        <div class="nav-section-label" style="margin-top: 0.5rem;">Comptabilité</div>
+        <button :class="{ active: ongletActif === 'marge' }" @click="ongletActif = 'marge'">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+            </svg>
+          </span>
+          Marge & Coûts
+        </button>
+
         <div class="nav-section-label" style="margin-top: 0.5rem;">Paramètres</div>
         <button :class="{ active: ongletActif === 'clients' }" @click="ongletActif = 'clients'">
           <span class="nav-icon">
@@ -353,10 +387,11 @@ const chargerDevisCommeFacture = (devis) => {
       <DevisListeView v-if="ongletActif === 'liste-devis'" :devisListe="devisListe" :boutique="boutique" :config="config" @charger-devis="chargerDevisDansEditeur" @convertir-en-facture="chargerDevisCommeFacture" />
       <FactureView ref="factureViewRef" v-if="ongletActif === 'facture'" :config="config" :clients="clients" :boutique="boutique" :facturesListe="factureListe" :prochainNumeroFacture="prochainNumeroFacture" @facture-numero-utilise="incrementerNumeroFacture" />
       <FactureListeView v-if="ongletActif === 'liste-factures'" :factureListe="factureListe" :boutique="boutique" :config="config" @charger-facture="chargerFactureDansEditeur" />
+      <MargeView v-if="ongletActif === 'marge'" :devisListe="devisListe" :factureListe="factureListe" :config="config" />
       <ClientsView v-if="ongletActif === 'clients'" :clients="clients" @add-client="gererAjoutClient" />
       <ConfigView v-if="ongletActif === 'config'" :config="config" :derniereSauvegarde="derniereSauvegarde" @backup-data="exporterBackup" @sauvegarder="sauvegarderManuellement" />
       <BoutiqueView v-if="ongletActif === 'boutique'" :boutique="boutique" :config="config" :derniereSauvegarde="derniereSauvegarde" @update-logo="gererMiseAJourLogo" @select-pdf-folder="selectionnerDossierPDF" @sauvegarder="sauvegarderManuellement" />
-      <WoocommerceView v-if="ongletActif === 'woocommerce'" :wooConfig="woocommerce" @update:wooConfig="(v) => { woocommerce.value = v }" />
+      <WoocommerceView v-if="ready && ongletActif === 'woocommerce'" :wooConfig="woocommerce" :produitsCache="wooProduitsCache" :produitsTimestamp="wooProduitsTimestamp" @update:wooConfig="gererUpdateWooConfig" @update:produitsCache="gererUpdateWooProduitsCache" @update:produitsTimestamp="gererUpdateWooProduitsTimestamp" />
     </main>
   </div>
 </template>
@@ -503,9 +538,18 @@ button { font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: 
 
 /* ── QUICK ACTIONS — Chips ───────────── */
 .quick-actions {
-  background: #faf6ef; padding: 1rem 1.25rem;
+  background: #faf6ef; padding: 0.7rem 1.25rem;
   border-radius: 8px; margin-bottom: 1.25rem; border: 1px solid #e8dcc8;
 }
+.quick-actions-toggle {
+  display: flex; align-items: center; gap: 0.4rem;
+  background: none; border: none; padding: 0; margin: 0;
+  cursor: pointer; width: auto;
+}
+.quick-actions-toggle h4 { margin: 0; }
+.chevron-icon { transition: transform 0.15s; flex-shrink: 0; }
+.chevron-icon.chevron-open { transform: rotate(90deg); }
+.quick-actions-body { margin-top: 0.85rem; }
 .btn-group { display: flex; gap: 0.45rem; flex-wrap: wrap; }
 .btn-group-diamonds { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .btn-group button, .btn-group-diamonds button {
@@ -541,6 +585,11 @@ button { font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: 
 }
 .table-input:hover { border-color: #d4b896; }
 .table-input:focus { border-color: #C5A059; background: #fff; outline: none; box-shadow: 0 0 0 2px rgba(197,160,89,0.12); }
+.table-textarea {
+  font-family: inherit; resize: vertical; overflow: hidden; min-height: 1.9em;
+  field-sizing: content;
+}
+.description-texte { white-space: pre-line; }
 
 .text-right  { text-align: right !important; }
 .text-center { text-align: center !important; }
@@ -548,13 +597,18 @@ button { font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: 
 
 /* ── INVOICE ─────────────────────────── */
 .print-container {
-  background: #fff; padding: 2rem 2.5rem;
+  background: #fff;
+  width: 210mm;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 14mm 16mm;
   border-radius: 8px; border: 1px solid #e0d5c5;
   box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+  font-size: 14px;
 }
 .invoice-header {
   display: flex; justify-content: space-between; align-items: flex-start;
-  margin-bottom: 2.5rem; padding-bottom: 1.5rem; border-bottom: 2px solid #e8dcc8;
+  margin-bottom: 2rem; padding-bottom: 1.25rem; border-bottom: 2px solid #e8dcc8;
 }
 .grand-total {
   font-size: 1.05rem; font-weight: 800; color: #0B3D2E;
@@ -562,6 +616,7 @@ button { font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: 
 }
 
 /* ── PRINT ───────────────────────────── */
+@page { margin: 0; }
 @media print {
   .no-print, .sidebar, button { display: none !important; }
   .app-layout { background: #fff; }
